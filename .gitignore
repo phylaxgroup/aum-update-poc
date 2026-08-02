@@ -1,0 +1,8 @@
+**/bin/
+**/obj/
+**/publish/
+**/*.zip
+**/local.settings.json
+*.user
+.vs/
+.vscode/
