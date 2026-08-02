@@ -28,8 +28,8 @@ public class WingetManifestService
         ILogger<WingetManifestService> log,
         IHttpClientFactory httpClientFactory)
     {
-        _log             = log;
-        _http            = httpClientFactory.CreateClient("winget");
+        _log              = log;
+        _http             = httpClientFactory.CreateClient("winget");
         _cacheExpiryHours = int.TryParse(
             Environment.GetEnvironmentVariable("CacheExpiryHours"), out var h) ? h : 24;
     }
@@ -61,7 +61,8 @@ public class WingetManifestService
             _cache[wingetId] = new CachedManifest
             {
                 PackageInfo = packageInfo,
-                ExpiresAt   = DateTimeOffset.UtcNow.AddHours(_cacheExpiryHours)
+                ExpiresAt   = DateTimeOffset.UtcNow.AddHours(
+                    _cacheExpiryHours > 0 ? _cacheExpiryHours : 0.1)
             };
         }
         finally
@@ -104,15 +105,13 @@ public class WingetManifestService
                 return null;
             }
 
-            var versionsJson = await versionsResponse.Content
-                .ReadAsStringAsync(ct);
+            var versionsJson = await versionsResponse.Content.ReadAsStringAsync(ct);
             var versionDirs  = JsonSerializer.Deserialize<GitHubItem[]>(
                 versionsJson, JsonOptions);
 
             if (versionDirs is null || versionDirs.Length == 0)
             {
-                _log.LogWarning(
-                    "No version directories found for {Id}", wingetId);
+                _log.LogWarning("No version directories found for {Id}", wingetId);
                 return null;
             }
 
@@ -125,14 +124,12 @@ public class WingetManifestService
 
             if (latestVersion.Parsed is null)
             {
-                _log.LogWarning(
-                    "Could not determine latest version for {Id}", wingetId);
+                _log.LogWarning("Could not determine latest version for {Id}", wingetId);
                 return null;
             }
 
             _log.LogInformation(
-                "Latest version for {Id}: {Version}",
-                wingetId, latestVersion.Raw);
+                "Latest version for {Id}: {Version}", wingetId, latestVersion.Raw);
 
             var installer = await FetchInstallerAsync(
                 prefix, publisher, packageName, latestVersion.Raw, ct);
@@ -144,6 +141,11 @@ public class WingetManifestService
                     wingetId, latestVersion.Raw);
                 return null;
             }
+
+            _log.LogInformation(
+                "Selected installer for {Id}: Type={Type} Arch={Arch} Url={Url}",
+                wingetId, installer.InstallerType, installer.Architecture,
+                installer.InstallerUrl);
 
             return new WingetPackageInfo
             {
@@ -158,8 +160,7 @@ public class WingetManifestService
         }
         catch (Exception ex)
         {
-            _log.LogWarning(ex,
-                "Failed to fetch winget manifest for {Id}", wingetId);
+            _log.LogWarning(ex, "Failed to fetch winget manifest for {Id}", wingetId);
             return null;
         }
     }
@@ -176,8 +177,7 @@ public class WingetManifestService
             $"{WingetManifestBase}/{prefix}/{publisher}/{packageName}" +
             $"/{version}/{manifestFile}";
 
-        _log.LogInformation(
-            "Fetching installer manifest from {Url}", manifestUrl);
+        _log.LogInformation("Fetching installer manifest from {Url}", manifestUrl);
 
         var response = await _http.GetAsync(manifestUrl, ct);
         if (!response.IsSuccessStatusCode)
@@ -190,19 +190,35 @@ public class WingetManifestService
 
         var yaml     = await response.Content.ReadAsStringAsync(ct);
         var manifest = ParseInstallerManifest(yaml);
+
+        _log.LogInformation(
+            "Parsed {Count} installer entries from manifest",
+            manifest.Installers?.Count ?? 0);
+
         return SelectBestInstaller(manifest.Installers ?? []);
     }
 
     private static WingetInstaller? SelectBestInstaller(
         List<WingetInstaller> installers)
     {
+        // Normalize wix -> msi (wix is the MSI installer type in newer manifests)
+        foreach (var i in installers)
+        {
+            if (i.InstallerType.Equals("wix", StringComparison.OrdinalIgnoreCase))
+                i.InstallerType = "msi";
+        }
+
+        // Preference: x64 MSI > x64 EXE > neutral MSI > anything
         return installers.FirstOrDefault(i =>
                 i.Architecture.Equals("x64", StringComparison.OrdinalIgnoreCase) &&
                 i.InstallerType.Equals("msi", StringComparison.OrdinalIgnoreCase))
             ?? installers.FirstOrDefault(i =>
-                i.Architecture.Equals("x64", StringComparison.OrdinalIgnoreCase))
+                i.Architecture.Equals("x64", StringComparison.OrdinalIgnoreCase) &&
+                i.InstallerType.Equals("exe", StringComparison.OrdinalIgnoreCase))
             ?? installers.FirstOrDefault(i =>
                 i.InstallerType.Equals("msi", StringComparison.OrdinalIgnoreCase))
+            ?? installers.FirstOrDefault(i =>
+                i.InstallerType.Equals("exe", StringComparison.OrdinalIgnoreCase))
             ?? installers.FirstOrDefault();
     }
 
@@ -211,38 +227,92 @@ public class WingetManifestService
         var manifest   = new WingetManifest();
         var installers = new List<WingetInstaller>();
         WingetInstaller? current = null;
+        bool inInstallers        = false;
+        bool inInstallerSwitches = false;
 
         foreach (var rawLine in yaml.Split('\n'))
         {
-            var trimmed = rawLine.TrimEnd().TrimStart();
+            var line    = rawLine.TrimEnd();
+            var trimmed = line.TrimStart();
+            var indent  = line.Length - trimmed.Length;
 
-            if (trimmed.StartsWith("- InstallerUrl:"))
+            if (trimmed.StartsWith("#") || string.IsNullOrWhiteSpace(trimmed))
+                continue;
+
+            // Detect start of Installers block
+            if (trimmed == "Installers:")
             {
-                current = new WingetInstaller();
+                inInstallers = true;
+                continue;
+            }
+
+            if (!inInstallers) continue;
+
+            // New installer entry — list item starting with dash
+            // Newer manifests start with Architecture or InstallerLocale
+            // Older manifests start with InstallerUrl
+            if (trimmed.StartsWith("- ") && indent == 0)
+            {
+                current              = new WingetInstaller();
+                inInstallerSwitches  = false;
                 installers.Add(current);
+
+                // Parse the field on the same line as the dash
+                var afterDash = trimmed[2..];
+                ParseInstallerField(current, afterDash);
+                continue;
             }
 
             if (current is null) continue;
 
-            if (TryGetValue(trimmed, "InstallerUrl", out var url))
-                current.InstallerUrl = url;
-            else if (TryGetValue(trimmed, "InstallerSha256", out var hash))
-                current.InstallerSha256 = hash;
-            else if (TryGetValue(trimmed, "InstallerType", out var type))
-                current.InstallerType = type;
-            else if (TryGetValue(trimmed, "Architecture", out var arch))
-                current.Architecture = arch;
-            else if (TryGetValue(trimmed, "ProductCode", out var code))
-                current.ProductCode = code;
-            else if (TryGetValue(trimmed, "Silent", out var silent))
+            // Detect InstallerSwitches nested block
+            if (trimmed == "InstallerSwitches:")
             {
-                current.InstallerSwitches ??= new();
-                current.InstallerSwitches.Silent = silent;
+                inInstallerSwitches          = true;
+                current.InstallerSwitches  ??= new WingetSwitches();
+                continue;
             }
+
+            // Exit InstallerSwitches if indent returns to installer level
+            if (inInstallerSwitches && indent <= 2)
+            {
+                inInstallerSwitches = false;
+            }
+
+            if (inInstallerSwitches)
+            {
+                if (TryGetValue(trimmed, "Silent", out var silent))
+                {
+                    current.InstallerSwitches ??= new WingetSwitches();
+                    current.InstallerSwitches.Silent = silent;
+                }
+                continue;
+            }
+
+            // Parse regular installer fields at any indent level
+            ParseInstallerField(current, trimmed);
         }
 
         manifest.Installers = installers;
         return manifest;
+    }
+
+    private static void ParseInstallerField(WingetInstaller installer, string line)
+    {
+        if (TryGetValue(line, "Architecture", out var arch))
+            installer.Architecture = arch;
+        else if (TryGetValue(line, "InstallerType", out var type))
+            installer.InstallerType = type;
+        else if (TryGetValue(line, "InstallerUrl", out var url))
+            installer.InstallerUrl = url;
+        else if (TryGetValue(line, "InstallerSha256", out var hash))
+            installer.InstallerSha256 = hash;
+        else if (TryGetValue(line, "ProductCode", out var code))
+        {
+            // Clean up quoted GUIDs: '{23170F69-...}' -> {23170F69-...}
+            var cleaned = code.Trim('\'', '"');
+            installer.ProductCode = cleaned;
+        }
     }
 
     private static bool TryGetValue(string line, string key, out string value)
@@ -253,6 +323,22 @@ public class WingetManifestService
             return false;
         value = line[prefix.Length..].Trim().Trim('"').Trim('\'');
         return !string.IsNullOrWhiteSpace(value);
+    }
+
+    private static bool TryGetManifestLevelValue(
+        string yaml, string key, out string value)
+    {
+        value = string.Empty;
+        foreach (var line in yaml.Split('\n'))
+        {
+            var trimmed = line.TrimStart();
+            if (line.Length > 0 && line[0] != ' ' && line[0] != '-')
+            {
+                if (TryGetValue(trimmed, key, out value))
+                    return true;
+            }
+        }
+        return false;
     }
 
     private static Version? TryParseVersion(string? v)
