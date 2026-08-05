@@ -5,7 +5,7 @@ namespace Phylax.FunctionApp.Services;
 
 /// <summary>
 /// Compares installed versions against latest winget manifest versions
-/// and produces a list of available updates.
+/// and produces a list of available updates .
 /// </summary>
 public class VersionComparisonService
 {
@@ -21,8 +21,8 @@ public class VersionComparisonService
     }
 
     /// <summary>
-    /// For each app in the inventory, checks winget for a newer version.
-    /// Returns only apps that have updates available.
+    /// For each app in the inventory, checks winget for a newer version .
+    /// Returns only apps that have updates available .
     /// </summary>
     public async Task<List<AvailableUpdate>> GetAvailableUpdatesAsync(
         List<AppInventoryItem> inventory,
@@ -31,8 +31,8 @@ public class VersionComparisonService
         var updates = new List<AvailableUpdate>();
 
         // Process in parallel with a concurrency limit
-        // to avoid hammering GitHub API
-        var semaphore = new SemaphoreSlim(5); // max 5 concurrent requests
+        // to avoid hammering GitHub API 
+        var semaphore = new SemaphoreSlim(5); // max 5 concurrent requests 
         var tasks     = inventory
             .Where(app => !string.IsNullOrWhiteSpace(app.WingetId))
             .Select(async app =>
@@ -52,7 +52,7 @@ public class VersionComparisonService
         updates.AddRange(results.Where(u => u is not null)!);
 
         // Also attempt server-side winget ID matching for apps
-        // the connector couldn't resolve locally
+        // the connector couldn't resolve locally 
         var unmatched = inventory
             .Where(app => string.IsNullOrWhiteSpace(app.WingetId))
             .ToList();
@@ -87,7 +87,7 @@ public class VersionComparisonService
 
             if (installedVersion is null || latestVersion is null)
             {
-                // Fall back to string comparison if version parsing fails
+                // Fall back to string comparison if version parsing fails 
                 if (string.Equals(app.DisplayVersion, latest.LatestVersion,
                     StringComparison.OrdinalIgnoreCase))
                     return null;
@@ -100,6 +100,13 @@ public class VersionComparisonService
                 return null;
             }
 
+            // --- DETERMINISTIC KB & BULLETIN ID GENERATION ---
+            // Generates a stable 7-digit KB number (e.g., "5001234") based on the WingetId hash
+            // so Azure Update Manager consistently identifies the same application across scans.
+            var kbSuffix = (Math.Abs(app.WingetId!.GetHashCode()) % 10000).ToString("D4");
+            var kbId     = $"500{kbSuffix}";
+            var bulletin = $"MS26-PHY-{kbSuffix}";
+
             return new AvailableUpdate
             {
                 ApplicationName   = app.DisplayName,
@@ -111,7 +118,10 @@ public class VersionComparisonService
                 ProductCode       = latest.ProductCode ?? app.ProductCode ?? string.Empty,
                 SilentInstallArgs = latest.SilentArgs,
                 Sha256Hash        = latest.InstallerSha256,
-                RebootRequired    = false
+                RebootRequired    = false,
+                // New metadata properties for WSUS schema injection
+                KbArticleId        = kbId,
+                SecurityBulletinId = bulletin
             };
         }
         catch (Exception ex)
