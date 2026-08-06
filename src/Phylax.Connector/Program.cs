@@ -1,0 +1,39 @@
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Phylax.Connector.Configuration;
+using Phylax.Connector.Services;
+
+var host = Host.CreateDefaultBuilder(args)
+    .UseWindowsService(options =>
+    {
+        options.ServiceName = "PhylaxConnector";
+    })
+    .ConfigureServices((context, services) =>
+    {
+        // Bind configuration sections
+        var configSection = context.Configuration.GetSection("PhylaxConnector");
+        services.Configure<PhylaxConnectorOptions>(configSection);
+        var options = configSection.Get<PhylaxConnectorOptions>();
+
+        // Register the Named HTTP Client for the Function App backend
+        services.AddHttpClient<CatalogClient>(client =>
+        {
+            client.BaseAddress = new Uri(options?.ApiBaseUrl ?? "http://localhost");
+            if (!string.IsNullOrWhiteSpace(options?.ApiKey))
+            {
+                client.DefaultRequestHeaders.Add("x-functions-key", options.ApiKey);
+            }
+            client.Timeout = TimeSpan.FromSeconds(60);
+        });
+
+        // Register clean engine singletons
+        services.AddSingleton<InventoryScanner>();
+        services.AddSingleton<WsusPublisher>();
+
+        // Main execution background loop
+        services.AddHostedService<Worker>();
+    })
+    .Build();
+
+await host.RunAsync();
