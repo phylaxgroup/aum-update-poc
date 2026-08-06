@@ -22,7 +22,7 @@ public class InventoryScanner
     public List<InstalledApp> ScanLocalMachine()
     {
         var apps = new List<InstalledApp>();
-        var seenKeys = new HashSet<string>(StringComparison.OrdinalIgnoreCase);
+        var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var hiveKeyPath in RegistryKeys)
         {
