@@ -1,73 +1,28 @@
-using System.Net.Http.Json;
-using System.Text.Json;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
-using Phylax.Connector.Configuration;
-using Phylax.Connector.Models;
-using Phylax.FunctionApp.Models; // Or shared DTOs matching CatalogUpdateRequest/Response
+using System.Net.Http.Headers;
 
-namespace Phylax.Connector.Services;
-
-public class CatalogClient
+public async Task<string?> GetArcManagedIdentityTokenAsync(CancellationToken ct)
 {
-    private readonly HttpClient _http;
-    private readonly ILogger<CatalogClient> _log;
-    private readonly PhylaxConnectorOptions _options;
+    using var client = new HttpClient();
+    // The local Arc Guest Agent identity endpoint port is fixed at 40342
+    var request = new HttpRequestMessage(HttpMethod.Get, "http://localhost:40342/metadata/identity/oauth2/token?api-version=2019-11-01&resource=https://management.azure.com/");
+    
+    // The HIMDS endpoint strictly requires this metadata header to prevent SSRF attacks
+    request.Headers.Add("Metadata", "true");
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    try
     {
-        PropertyNameCaseInsensitive = true
-    };
-
-    public CatalogClient(
-        HttpClient http, 
-        ILogger<CatalogClient> log, 
-        IOptions<PhylaxConnectorOptions> options)
-    {
-        _http = http;
-        _log = log;
-        _options = options.Value;
-    }
-
-    public async Task<List<AvailableUpdate>> GetRequiredUpdatesAsync(
-        List<InstalledApp> inventory, 
-        CancellationToken ct = default)
-    {
-        try
+        var response = await client.SendAsync(request, ct);
+        if (response.IsSuccessStatusCode)
         {
-            var requestPayload = new CatalogUpdateRequest
-            {
-                TenantId = _options.TenantId,
-                Timestamp = DateTimeOffset.UtcNow,
-                Apps = inventory.Select(a => new AppInventoryItem
-                {
-                    DisplayName = a.DisplayName,
-                    DisplayVersion = a.DisplayVersion,
-                    Publisher = a.Publisher,
-                    ProductCode = a.ProductCode,
-                    WingetId = a.WingetId
-                }).ToList()
-            };
-
-            var requestMessage = new HttpRequestMessage(HttpMethod.Post, "api/catalog/updates");
-            requestMessage.Headers.Add("X-Tenant-Id", _options.TenantId);
-            requestMessage.Headers.Add("X-Machine-Name", Environment.MachineName);
-            requestMessage.Content = JsonContent.Create(requestPayload);
-
-            _log.LogInformation("Sending {Count} inventory items to Phylax Catalog API...", inventory.Count);
-            
-            var response = await _http.SendAsync(requestMessage, ct);
-            response.EnsureSuccessStatusCode();
-
-            var result = await response.Content.ReadFromJsonAsync<CatalogUpdateResponse>(JsonOptions, ct);
-            
-            _log.LogInformation("Catalog API returned {Count} available updates.", result?.Updates.Count ?? 0);
-            return result?.Updates ?? new List<AvailableUpdate>();
-        }
-        catch (Exception ex)
-        {
-            _log.LogError(ex, "Failed to retrieve catalog updates from Function App.");
-            return new List<AvailableUpdate>();
+            var content = await response.Content.ReadAsStringAsync(ct);
+            // Parse out the access_token string from the JSON response
+            var tokenResponse = System.Text.Json.JsonDocument.Parse(content);
+            return tokenResponse.RootElement.GetProperty("access_token").GetString();
         }
     }
+    catch (Exception)
+    {
+        // Fallback or log if running in a non-Arc environment
+    }
+    return null;
 }
