@@ -11,7 +11,7 @@ namespace Phylax.FunctionApp.Functions;
 public class ConnectorInventoryFunction
 {
     private readonly ILogger<ConnectorInventoryFunction> _log;
-    private readonly InventoryStorageService _storage;
+    private readonly LogAnalyticsIngestionService _ingestionService;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -21,29 +21,20 @@ public class ConnectorInventoryFunction
 
     public ConnectorInventoryFunction(
         ILogger<ConnectorInventoryFunction> log,
-        InventoryStorageService storage)
+        LogAnalyticsIngestionService ingestionService)
     {
-        _log     = log;
-        _storage = storage;
+        _log              = log;
+        _ingestionService = ingestionService;
     }
 
-    /// <summary>
-    /// POST /api/connector/inventory
-    /// Stores full inventory snapshot from a connector instance.
-    /// Used for fleet-wide software visibility in the Phylax dashboard.
-    /// </summary>
     [Function("ConnectorInventory")]
     public async Task<HttpResponseData> Run(
         [HttpTrigger(AuthorizationLevel.Function, "post",
             Route = "connector/inventory")] HttpRequestData req,
         CancellationToken ct)
     {
-        var tenantId    = req.Headers
-            .GetValues("X-Tenant-Id")
-            .FirstOrDefault();
-        var machineName = req.Headers
-            .GetValues("X-Machine-Name")
-            .FirstOrDefault();
+        var tenantId    = req.Headers.GetValues("X-Tenant-Id").FirstOrDefault();
+        var machineName = req.Headers.GetValues("X-Machine-Name").FirstOrDefault();
 
         if (string.IsNullOrWhiteSpace(tenantId))
         {
@@ -74,20 +65,19 @@ public class ConnectorInventoryFunction
             return ok;
         }
 
-        await _storage.UpsertInventoryAsync(
+        // Stream snapshot directly to Log Analytics
+        await _ingestionService.UploadInventoryAsync(
             tenantId,
             machineName ?? "unknown",
             apps,
             ct);
 
         _log.LogInformation(
-            "Stored {Count} inventory records for " +
-            "tenant {Tenant} machine {Machine}",
+            "Ingested {Count} inventory records for tenant {Tenant} machine {Machine} into Log Analytics",
             apps.Count, tenantId, machineName);
 
         var response = req.CreateResponse(HttpStatusCode.OK);
-        await response.WriteStringAsync(
-            $"Stored {apps.Count} inventory records");
+        await response.WriteStringAsync($"Ingested {apps.Count} inventory records to workspace");
         return response;
     }
 }
