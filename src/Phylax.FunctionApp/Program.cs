@@ -1,24 +1,29 @@
-using Microsoft.Extensions.Configuration;
+using Microsoft.Azure.Functions.Worker;
+using Microsoft.Azure.Functions.Worker.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Phylax.FunctionApp.Services;
 
-var host = new HostBuilder()
-    .ConfigureFunctionsWorkerDefaults()
-    .ConfigureServices((context, services) =>
-    {
-        // Register Named HttpClient for fetching WinGet manifests safely from GitHub
-        services.AddHttpClient("winget", client =>
-        {
-            client.DefaultRequestHeaders.Add("User-Agent", "Phylax-Vanguard-Engine/1.0");
-            client.Timeout = TimeSpan.FromSeconds(30);
-        });
+var builder = FunctionsApplication.CreateBuilder(args);
 
-        // Register core backend singletons (Replacing Table Storage with Log Analytics Ingestion)
-        services.AddSingleton<LogAnalyticsIngestionService>();
-        services.AddSingleton<WingetManifestService>();
-        services.AddSingleton<VersionComparisonService>();
-    })
-    .Build();
+// Satisfies the ASP.NET Core integration requirements for extension packages
+builder.ConfigureFunctionsWebApplication();
 
-await host.RunAsync();
+// Default HttpClient
+builder.Services.AddHttpClient();
+
+// Named client for winget GitHub API calls
+builder.Services.AddHttpClient("winget", client =>
+{
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("PhylaxFunctionApp/1.0");
+    client.DefaultRequestHeaders.Accept.ParseAdd(
+        "application/vnd.github.v3+json");
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+
+// Core backend services
+builder.Services.AddSingleton<WingetManifestService>();
+builder.Services.AddSingleton<VersionComparisonService>();
+builder.Services.AddSingleton<LogAnalyticsIngestionService>(); // Replaced InventoryStorageService
+
+builder.Build().Run();
