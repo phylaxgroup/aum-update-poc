@@ -13,7 +13,7 @@ public class LogAnalyticsIngestionService
     private readonly LogsIngestionClient? _client;
     private readonly string? _ruleId;
     private readonly string? _streamName;
-    private readonly bool _isConfigured = false;
+    private readonly bool _isConfigured;
 
     public LogAnalyticsIngestionService(ILogger<LogAnalyticsIngestionService> log)
     {
@@ -39,7 +39,7 @@ public class LogAnalyticsIngestionService
     {
         if (!_isConfigured || _client == null)
         {
-            _log.LogError("Ingestion client is unconfigured. Skipping upload.");
+            _log.LogWarning("Log Analytics ingestion is unconfigured. Skipping inventory upload for {Machine}.", machineName);
             return;
         }
 
@@ -57,25 +57,24 @@ public class LogAnalyticsIngestionService
 
         try
         {
-            _log.LogInformation("Uploading {Count} records for {Machine} to Log Analytics...", telemetryPayload.Count, machineName);
-            
             var jsonPayload = JsonSerializer.Serialize(telemetryPayload);
-            var requestContent = RequestContent.Create(jsonPayload);
+            var binaryData = BinaryData.FromString(jsonPayload);
             
-            var response = await _client.UploadAsync(_ruleId!, _streamName!, requestContent, cancellationToken: ct);
+            // Azure Monitor Ingestion SDK expects an IEnumerable<BinaryData> collection
+            var response = await _client.UploadAsync(_ruleId!, _streamName!, new[] { binaryData }, cancellationToken: ct);
 
             if (response.IsError)
             {
-                _log.LogError("Log Analytics upload failed with status code: {Status}", response.Status);
+                _log.LogError("Log Analytics inventory upload failed with status code: {Status}", response.Status);
             }
             else
             {
-                _log.LogInformation("Inventory telemetry successfully pushed to workspace for {Machine}.", machineName);
+                _log.LogInformation("Successfully ingested {Count} inventory records for {Machine} into Log Analytics.", telemetryPayload.Count, machineName);
             }
         }
         catch (Exception ex)
         {
-            _log.LogError(ex, "Unhandled error during log analytics ingestion for machine {Machine}", machineName);
+            _log.LogError(ex, "Exception occurred during Log Analytics ingestion for machine {Machine}.", machineName);
         }
     }
 }
