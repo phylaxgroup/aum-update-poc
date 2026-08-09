@@ -4,14 +4,12 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
 using Phylax.FunctionApp.Models;
-using Phylax.FunctionApp.Services;
 
 namespace Phylax.FunctionApp.Functions;
 
 public class ConnectorStatusFunction
 {
     private readonly ILogger<ConnectorStatusFunction> _log;
-    private readonly InventoryStorageService _storage;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -19,19 +17,11 @@ public class ConnectorStatusFunction
         PropertyNameCaseInsensitive = true
     };
 
-    public ConnectorStatusFunction(
-        ILogger<ConnectorStatusFunction> log,
-        InventoryStorageService storage)
+    public ConnectorStatusFunction(ILogger<ConnectorStatusFunction> log)
     {
-        _log     = log;
-        _storage = storage;
+        _log = log;
     }
 
-    /// <summary>
-    /// POST /api/connector/status
-    /// Receives telemetry from the connector service.
-    /// Stores it in Table Storage for monitoring and billing metering.
-    /// </summary>
     [Function("ConnectorStatus")]
     public async Task<HttpResponseData> Run(
         [HttpTrigger(AuthorizationLevel.Function, "post",
@@ -67,8 +57,6 @@ public class ConnectorStatusFunction
             status.TenantId, status.MachineName,
             status.InventoryCount, status.UpdatesFound,
             status.ConnectorVersion);
-
-        await _storage.StoreStatusAsync(status, ct);
 
         var ok = req.CreateResponse(HttpStatusCode.OK);
         await ok.WriteStringAsync("OK");
