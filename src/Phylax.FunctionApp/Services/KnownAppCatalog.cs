@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-namespace Phylax.Connector.Services;
+namespace Phylax.FunctionApp.Services;
 
 /// <summary>
 /// Maps standard Windows Registry DisplayNames and Publishers to official Microsoft WinGet Package IDs.
