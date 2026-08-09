@@ -4,6 +4,6 @@ public record InstalledApp(
     string DisplayName,
     string DisplayVersion,
     string Publisher,
-    string? ProductCode,
+    string ProductCode,
     string? WingetId
 );
