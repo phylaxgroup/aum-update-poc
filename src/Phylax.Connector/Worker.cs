@@ -1,8 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
-using Phylax.Connector.Configuration;
 using Phylax.Connector.Services;
+using Phylax.Connector.Models;
 
 namespace Phylax.Connector;
 
@@ -11,19 +10,19 @@ public class Worker : BackgroundService
     private readonly ILogger<Worker> _log;
     private readonly InventoryScanner _scanner;
     private readonly CatalogClient _catalog;
-    private readonly WsusPublisher _publisher;
+    private readonly LocalInstallerService _installer;
     private readonly TimeSpan _checkInterval = TimeSpan.FromHours(6);
 
     public Worker(
         ILogger<Worker> log,
         InventoryScanner scanner,
         CatalogClient catalog,
-        WsusPublisher publisher)
+        LocalInstallerService installer) 
     {
         _log = log;
         _scanner = scanner;
         _catalog = catalog;
-        _publisher = publisher;
+        _installer = installer;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -34,37 +33,44 @@ public class Worker : BackgroundService
         {
             try
             {
-                _log.LogInformation("--- Starting Phylax Update & Publishing Cycle ---");
+                _log.LogInformation("--- Starting Phylax Update & Scanning Cycle ---");
+                
+                // 1. Scan local server ARP table registry baselines
+                List<InstalledApp> inventory = _scanner.ScanLocalMachine();
+                
+                // 2. Diff local inventory against cloud Function App catalog definitions
+                List<AvailableUpdate> availableUpdates = await _catalog.GetRequiredUpdatesAsync(inventory, stoppingToken);
 
-                // 1. Scan local machine inventory (enriched with WinGet IDs)
-                var inventory = _scanner.ScanLocalMachine();
-
-                // 2. Request matching security updates from Function App
-                var availableUpdates = await _catalog.GetRequiredUpdatesAsync(inventory, stoppingToken);
-
-                // 3. Publish each new update to WSUS with v11 Security classification
-                int publishedCount = 0;
+                int processedCount = 0;
                 foreach (var update in availableUpdates)
                 {
-                    _log.LogInformation("Processing update: {App} -> v{Version} (KB: {KB})", 
+                    _log.LogInformation("Processing required update: {App} -> v{Version} (KB: {KB})", 
                         update.ApplicationName, update.NewVersion, update.KbArticleId);
 
-                    bool success = await _publisher.PublishUpdateAsync(update, stoppingToken);
+                    // 3. Execute local silent installation engine
+                    bool success = await _installer.InstallUpdateAsync(update.ApplicationName, update.NewVersion, stoppingToken);
+                    
                     if (success)
                     {
-                        publishedCount++;
+                        processedCount++;
                     }
                 }
 
-                _log.LogInformation("Cycle complete. Successfully published {Published}/{Total} updates to WSUS.", 
-                    publishedCount, availableUpdates.Count);
+                _log.LogInformation("Cycle complete. Successfully evaluated and patched {Processed}/{Total} applications on local endpoint.", 
+                    processedCount, availableUpdates.Count);
             }
             catch (Exception ex)
             {
                 _log.LogError(ex, "An unhandled exception occurred during the Phylax update cycle.");
             }
 
-            _log.LogInformation("Sleeping for {Hours} hours until next scan cycle...", _checkInterval.TotalHours);
+            // =====================================================================
+            // NOTE FOR SCHEDULED TASKS / ONE-SHOT EXECUTION:
+            // If running via Task Scheduler instead of a Windows Service, uncomment
+            // the break statement below so the binary exits after one complete run:
+            // break;
+            // =====================================================================
+
             await Task.Delay(_checkInterval, stoppingToken);
         }
     }
