@@ -72,9 +72,10 @@ public class LogAnalyticsIngestionService
                 _log.LogInformation("Successfully ingested {Count} inventory records for {Machine} into Log Analytics.", telemetryPayload.Count, machineName);
             }
         }
-        catch (Exception ex)
-        {
-            _log.LogError(ex, "Exception occurred during Log Analytics ingestion for machine {Machine}.", machineName);
-        }
+       catch (Exception ex)
+{
+    // Log the inner exception and message explicitly
+    _log.LogError(ex, "Detailed Ingestion Error: {Message} | Inner: {Inner}", ex.Message, ex.InnerException?.Message);
+}
     }
 }
