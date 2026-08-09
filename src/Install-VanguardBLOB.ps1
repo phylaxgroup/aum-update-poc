@@ -18,8 +18,8 @@ Write-Host "--- Starting Phylax Vanguard Deployment ---" -ForegroundColor Cyan
 # ============================================================================
 # CONFIGURATION - PASTE YOUR AZURE BLOB SAS URLS HERE
 # ============================================================================
-$exeSasUrl  = "https://stphylaxdeploy.blob.core.windows.net/vanguard-releases/Phylax.Connector.exe?<INSERT_SAS_TOKEN_HERE>"
-$jsonSasUrl = "https://stphylaxdeploy.blob.core.windows.net/vanguard-releases/appsettings.json?<INSERT_SAS_TOKEN_HERE>"
+$exeSasUrl  = "https://phylaxdeployst.blob.core.windows.net/vanguard-releases/Phylax.Connector.exe?sp=r&st=2026-08-09T17:49:17Z&se=2026-08-10T02:04:17Z&spr=https&sv=2026-02-06&sr=c&sig=Ius539O8f5YukTmpDIOR8NlSq5XzBMr8TNQ%2Fv97TX%2Fo%3D"
+$jsonSasUrl = "https://phylaxdeployst.blob.core.windows.net/vanguard-releases/appsettings.json?sp=r&st=2026-08-09T17:49:17Z&se=2026-08-10T02:04:17Z&spr=https&sv=2026-02-06&sr=c&sig=Ius539O8f5YukTmpDIOR8NlSq5XzBMr8TNQ%2Fv97TX%2Fo%3D"
 
 $installDir = "C:\Program Files\Phylax Vanguard"
 $serviceName = "PhylaxVanguard"
