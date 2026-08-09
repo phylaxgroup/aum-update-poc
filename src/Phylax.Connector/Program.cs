@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Phylax.Connector;
 using Phylax.Connector.Configuration;
 using Phylax.Connector.Services;
 
@@ -28,8 +29,11 @@ var host = Host.CreateDefaultBuilder(args)
         });
 
         // Register clean engine singletons
-        services.AddSingleton<InventoryScanner>();
-        services.AddSingleton<WsusPublisher>();
+	services.AddSingleton<InventoryScanner>();
+	services.AddSingleton<LocalInstallerService>(); // <-- Updated Type Name
+        // Commented out to prevent the .NET runtime from searching for 
+        // WSUS dependencies on non-WSUS client nodes (Server 2022 / 2025):
+        // services.AddSingleton<WsusPublisher>();
 
         // Main execution background loop
         services.AddHostedService<Worker>();
