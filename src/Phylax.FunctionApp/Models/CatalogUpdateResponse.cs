@@ -3,9 +3,9 @@ namespace Phylax.FunctionApp.Models;
 public class CatalogUpdateResponse
 {
     public string TenantId { get; set; } = string.Empty;
-    public DateTimeOffset GeneratedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset GeneratedAt { get; set; }
     public int UpdatesAvailable { get; set; }
-    public List<AvailableUpdate> Updates { get; set; } = [];
+    public List<AppUpdateItem> Updates { get; set; } = new();
 }
 
 public class AvailableUpdate
