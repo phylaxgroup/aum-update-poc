@@ -4,7 +4,10 @@ public class PhylaxConnectorOptions
 {
     public string TenantId { get; set; } = string.Empty;
     public string ApiBaseUrl { get; set; } = string.Empty;
-    public string EvaluateUpdatesEndpoint { get; set; } = "api/catalog/updates";
     public string ApiKey { get; set; } = string.Empty;
-    public int PollingIntervalHours { get; set; } = 6;
+    public int ScanIntervalHours { get; set; } = 24;
+    public string VendorName { get; set; } = "Phylax";
+    public string ProductName { get; set; } = "Phylax Third-Party Updates";
+    public string PayloadStagingPath { get; set; } = @"C:\ProgramData\Phylax\Staging";
+    public string SdpOutputPath { get; set; } = @"C:\ProgramData\Phylax\SDP";
 }
