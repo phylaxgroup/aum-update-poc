@@ -1,8 +1,8 @@
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.Azure.Functions.Worker;
-using Microsoft.Extensions.Logging;
+using System.Net;
 using System.Text.Json;
+using Microsoft.Azure.Functions.Worker;
+using Microsoft.Azure.Functions.Worker.Http;
+using Microsoft.Extensions.Logging;
 using Phylax.FunctionApp.Models;
 using Phylax.FunctionApp.Services;
 
@@ -10,67 +10,106 @@ namespace Phylax.FunctionApp.Functions;
 
 public class CatalogUpdatesFunction
 {
-    private readonly ILogger<CatalogUpdatesFunction> _logger;
-    private readonly LogAnalyticsIngestionService _ingestionService;
-    private readonly VersionComparisonService _versionComparison;
+    private readonly ILogger<CatalogUpdatesFunction> _log;
+    private readonly VersionComparisonService _versionService;
+    private readonly InventoryStorageService _storage;
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy        = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true
+    };
 
     public CatalogUpdatesFunction(
-        ILogger<CatalogUpdatesFunction> logger,
-        LogAnalyticsIngestionService ingestionService,
-        VersionComparisonService versionComparison)
+        ILogger<CatalogUpdatesFunction> log,
+        VersionComparisonService versionService,
+        InventoryStorageService storage)
     {
-        _logger = logger;
-        _ingestionService = ingestionService;
-        _versionComparison = versionComparison;
+        _log            = log;
+        _versionService = versionService;
+        _storage        = storage;
     }
 
     [Function("CatalogUpdates")]
-    public async Task<IActionResult> Run(
-        [HttpTrigger(AuthorizationLevel.Function, "post", Route = "catalog/updates")] HttpRequest req)
+    public async Task<HttpResponseData> Run(
+        [HttpTrigger(AuthorizationLevel.Function, "post",
+            Route = "catalog/updates")] HttpRequestData req,
+        CancellationToken ct)
     {
-        _logger.LogInformation("CatalogUpdates HTTP trigger endpoint invoked.");
+        _log.LogInformation("CatalogUpdates triggered");
 
-        string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
-        if (string.IsNullOrWhiteSpace(requestBody))
+        // Parse request body
+        CatalogUpdateRequest? request;
+        try
         {
-            return new BadRequestObjectResult("Request body cannot be empty.");
+            var body = await req.ReadAsStringAsync();
+            request  = JsonSerializer.Deserialize<CatalogUpdateRequest>(
+                body ?? string.Empty, JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Failed to parse request body");
+            var badRequest = req.CreateResponse(HttpStatusCode.BadRequest);
+            await badRequest.WriteStringAsync("Invalid request body");
+            return badRequest;
         }
 
-        var updateRequest = JsonSerializer.Deserialize<CatalogUpdateRequest>(requestBody,
-            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
-
-        if (updateRequest == null || updateRequest.Apps == null)
+        if (request is null || string.IsNullOrWhiteSpace(request.TenantId))
         {
-            return new BadRequestObjectResult("Invalid payload structure.");
+            var badRequest = req.CreateResponse(HttpStatusCode.BadRequest);
+            await badRequest.WriteStringAsync("TenantId is required");
+            return badRequest;
         }
 
-        string machineName = req.Headers["x-machine-name"].ToString();
-        if (string.IsNullOrWhiteSpace(machineName))
+        _log.LogInformation(
+            "Processing catalog update request for tenant {TenantId}: {AppCount} apps",
+            request.TenantId, request.Apps.Count);
+
+        // Safe header read — GetValues throws if header is absent
+        req.Headers.TryGetValues("X-Machine-Name", out var machineNameValues);
+        var machineName = machineNameValues?.FirstOrDefault();
+
+        // Store inventory for fleet visibility if machine name was provided
+        if (request.Apps.Count > 0 && !string.IsNullOrWhiteSpace(machineName))
         {
-            machineName = "Unknown-Vanguard-Host";
+            await _storage.UpsertInventoryAsync(
+                request.TenantId, machineName, request.Apps, ct);
         }
 
-        // 1. Asynchronously push telemetry to Log Analytics Workspace via DCR
-        await _ingestionService.UploadInventoryAsync(
-            updateRequest.TenantId,
-            machineName,
-            updateRequest.Apps,
-            req.HttpContext.RequestAborted);
+        // Get available updates from winget
+        var updates = await _versionService
+            .GetAvailableUpdatesAsync(request.Apps, ct);
 
-        // 2. Perform version comparison using your Winget manifest engine
-        var availableUpdates = await _versionComparison.GetAvailableUpdatesAsync(
-            updateRequest.Apps,
-            req.HttpContext.RequestAborted);
-
-        // 3. Formulate the response payload for the Vanguard endpoint
         var response = new CatalogUpdateResponse
         {
-            TenantId = updateRequest.TenantId,
-            GeneratedAt = DateTimeOffset.UtcNow,
-            UpdatesAvailable = availableUpdates.Count,
-            Updates = availableUpdates
+            TenantId         = request.TenantId,
+            GeneratedAt      = DateTimeOffset.UtcNow,
+            UpdatesAvailable = updates.Count,
+            Updates          = updates
         };
+// TEMPORARY TEST SEED: Force a 7-Zip update down to the connector
+availableUpdates.Add(new CatalogUpdate
+{
+    ApplicationName = "7-Zip",
+    CurrentVersion = "22.01",
+    NewVersion = "24.08",
+    InstallerUrl = "https://www.7-zip.org/a/7z2408-x64.msi",
+    InstallerType = "msi",
+    SilentInstallArgs = "/quiet /norestart",
+    Sha256Hash = "", // Leave blank to skip local builder hash check for speed
+    SecurityBulletinId = "MS26-PHY11",
+    KbArticleId = "5000011"
+});
 
-        return new OkObjectResult(response);
+        var ok = req.CreateResponse(HttpStatusCode.OK);
+        ok.Headers.Add("Content-Type", "application/json");
+        await ok.WriteStringAsync(
+            JsonSerializer.Serialize(response, JsonOptions));
+
+        _log.LogInformation(
+            "Returning {Count} updates for tenant {TenantId}",
+            updates.Count, request.TenantId);
+
+        return ok;
     }
 }
