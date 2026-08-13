@@ -38,9 +38,9 @@ public class CatalogUpdatesFunction
         {
             ApplicationName = "Notepad++",
             LatestVersion = "8.6.9",
-            InstallerUrl = "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.6.9/npp.8.6.9.Installer.x64.msi",
-            InstallerType = "msi",
-            SilentInstallArgs = "/qn /norestart",
+            InstallerUrl = "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.6.9/npp.8.6.9.Installer.x64.exe",
+            InstallerType = "exe", // Updated to EXE
+            SilentInstallArgs = "/S", // Standard NSIS silent flag
             SecurityBulletinId = "MS26-PHY12",
             KbArticleId = "5000012"
         },
@@ -48,7 +48,7 @@ public class CatalogUpdatesFunction
         {
             ApplicationName = "Google Chrome",
             LatestVersion = "127.0.6533.120",
-            InstallerUrl = "https://dl.google.com/tag/s/appguid%3D%7B8A69D345-224D-4724-88A8-F14749E2562D%7D%26iid%3D%7B362804A9-D971-4712-9213-928E46944A95%7D%26lang%3Den%26browser%3D4%26usagestats%3D0%26appname%3DGoogle%2520Chrome%26needsadmin%3Dtrue%26ap%3Dx64-stable-statsdef_1/update2/installers/ChromeStandaloneSetup64.msi",
+            InstallerUrl = "https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi", // Stable Enterprise MSI link
             InstallerType = "msi",
             SilentInstallArgs = "/qn /norestart",
             SecurityBulletinId = "MS26-PHY13",
