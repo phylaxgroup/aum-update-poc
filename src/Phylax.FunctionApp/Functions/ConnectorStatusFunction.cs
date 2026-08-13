@@ -1,5 +1,4 @@
 using System.Net;
-using System.Text.Json;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
@@ -9,57 +8,28 @@ namespace Phylax.FunctionApp.Functions;
 
 public class ConnectorStatusFunction
 {
-    private readonly ILogger<ConnectorStatusFunction> _log;
+    private readonly ILogger<ConnectorStatusFunction> _logger;
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    public ConnectorStatusFunction(ILogger<ConnectorStatusFunction> logger)
     {
-        PropertyNamingPolicy        = JsonNamingPolicy.CamelCase,
-        PropertyNameCaseInsensitive = true
-    };
-
-    public ConnectorStatusFunction(ILogger<ConnectorStatusFunction> log)
-    {
-        _log = log;
+        _logger = logger;
     }
 
     [Function("ConnectorStatus")]
     public async Task<HttpResponseData> Run(
-        [HttpTrigger(AuthorizationLevel.Function, "post",
-            Route = "connector/status")] HttpRequestData req,
-        CancellationToken ct)
+        [HttpTrigger(AuthorizationLevel.Function, "post", Route = "connector/status")] HttpRequestData req)
     {
-        ConnectorStatusRequest? status;
-        try
+        _logger.LogInformation("Receiving connector telemetry status update.");
+
+        var status = await req.ReadFromJsonAsync<ConnectorStatusRequest>();
+        if (status is null)
         {
-            var body = await req.ReadAsStringAsync();
-            status   = JsonSerializer.Deserialize<ConnectorStatusRequest>(
-                body ?? string.Empty, JsonOptions);
-        }
-        catch (Exception ex)
-        {
-            _log.LogWarning(ex, "Failed to parse status request");
-            var bad = req.CreateResponse(HttpStatusCode.BadRequest);
-            await bad.WriteStringAsync("Invalid request body");
-            return bad;
+            return req.CreateResponse(HttpStatusCode.BadRequest);
         }
 
-        if (status is null || string.IsNullOrWhiteSpace(status.TenantId))
-        {
-            var bad = req.CreateResponse(HttpStatusCode.BadRequest);
-            await bad.WriteStringAsync("TenantId is required");
-            return bad;
-        }
+        _logger.LogInformation("Connector Execution Summary -> Machine: {Machine}, App: {App}, Success: {Status}", 
+            status.MachineName, status.ApplicationName, status.Success);
 
-        _log.LogInformation(
-            "Connector status received: Tenant={TenantId} | " +
-            "Machine={Machine} | Inventory={Inventory} | Updates={Updates} | " +
-            "Version={Version}",
-            status.TenantId, status.MachineName,
-            status.InventoryCount, status.UpdatesFound,
-            status.ConnectorVersion);
-
-        var ok = req.CreateResponse(HttpStatusCode.OK);
-        await ok.WriteStringAsync("OK");
-        return ok;
+        return req.CreateResponse(HttpStatusCode.OK);
     }
 }
