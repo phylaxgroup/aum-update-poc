@@ -2,26 +2,21 @@ namespace Phylax.FunctionApp.Models;
 
 public class CatalogUpdateResponse
 {
-    public string TenantId { get; set; } = string.Empty;
-    public DateTimeOffset GeneratedAt { get; set; }
-    public int UpdatesAvailable { get; set; }
-    public List<AppUpdateItem> Updates { get; set; } = new();
+    public List<CatalogUpdate> Updates { get; set; } = [];
 }
 
-public class AvailableUpdate
+public class CatalogUpdate
 {
     public string ApplicationName { get; set; } = string.Empty;
-    public string WingetId { get; set; } = string.Empty;
     public string CurrentVersion { get; set; } = string.Empty;
     public string NewVersion { get; set; } = string.Empty;
     public string InstallerUrl { get; set; } = string.Empty;
-    public string InstallerType { get; set; } = string.Empty;
-    public string ProductCode { get; set; } = string.Empty;
+    public string InstallerType { get; set; } = "msi";
+    public string? ProductCode { get; set; }
     public string SilentInstallArgs { get; set; } = string.Empty;
     public string Sha256Hash { get; set; } = string.Empty;
-    public bool RebootRequired { get; set; }
 
-    // --- ADDED FOR WSUS / AUM METADATA INJECTION ---
-    public string KbArticleId { get; set; } = string.Empty;
-    public string SecurityBulletinId { get; set; } = string.Empty;
+    // Metadata required for local WSUS v11 XML injection
+    public string SecurityBulletinId { get; set; } = "MS26-PHY11";
+    public string KbArticleId { get; set; } = "5000011";
 }
