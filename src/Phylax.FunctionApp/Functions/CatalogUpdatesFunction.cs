@@ -29,7 +29,7 @@ public CatalogUpdatesFunction(
         _logger.LogInformation("Processing update evaluation request.");
 
         var requestData = await req.ReadFromJsonAsync<CatalogUpdateRequest>();
-        if (requestData is null || requestData.InstalledApplications.Count == 0)
+        if (requestData is null)
         {
             var badResponse = req.CreateResponse(HttpStatusCode.BadRequest);
             await badResponse.WriteStringAsync("Invalid or empty payload.");
