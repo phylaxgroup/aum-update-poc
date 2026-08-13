@@ -12,17 +12,15 @@ public class CatalogUpdatesFunction
     private readonly ILogger<CatalogUpdatesFunction> _logger;
     private readonly WingetManifestService _manifestService;
     private readonly VersionComparisonService _versionService;
-
-    // Notice: InventoryStorageService is completely removed from this constructor
-    public CatalogUpdatesFunction(
-        ILogger<CatalogUpdatesFunction> logger,
-        WingetManifestService manifestService,
-        VersionComparisonService versionService)
-    {
-        _logger = logger;
-        _manifestService = manifestService;
-        _versionService = versionService;
-    }
+public CatalogUpdatesFunction(
+    ILogger<CatalogUpdatesFunction> logger,
+    WingetManifestService manifestService,
+    VersionComparisonService versionService)
+{
+    _logger = logger;
+    _manifestService = manifestService;
+    _versionService = versionService;
+}
 
     [Function("CatalogUpdates")]
     public async Task<HttpResponseData> Run(
