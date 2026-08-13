@@ -1,31 +1,135 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker;
+using Microsoft.Extensions.Logging;
+using System.Text.Json;
 using Phylax.FunctionApp.Models;
+using Phylax.FunctionApp.Services;
 
 namespace Phylax.FunctionApp.Functions;
 
 public class CatalogUpdatesFunction
 {
-    [Function("CatalogUpdates")]
-    public IActionResult Run([HttpTrigger(AuthorizationLevel.Function, "post", Route = "catalog/updates")] HttpRequest req)
+    private readonly ILogger<CatalogUpdatesFunction> _logger;
+    private readonly VersionComparisonService _versionService;
+
+    public CatalogUpdatesFunction(
+        ILogger<CatalogUpdatesFunction> logger,
+        VersionComparisonService versionService)
     {
-        var availableUpdates = new List<CatalogUpdate>
+        _logger = logger;
+        _versionService = versionService;
+    }
+
+    // A structured Master Catalog definition representing what Phylax supports
+    private static readonly List<MasterCatalogItem> MasterCatalog = new()
+    {
+        new MasterCatalogItem
         {
-            new CatalogUpdate
+            ApplicationName = "7-Zip",
+            LatestVersion = "24.08",
+            InstallerUrl = "https://www.7-zip.org/a/7z2408-x64.msi",
+            InstallerType = "msi",
+            SilentInstallArgs = "/quiet /norestart",
+            SecurityBulletinId = "MS26-PHY11",
+            KbArticleId = "5000011"
+        },
+        new MasterCatalogItem
+        {
+            ApplicationName = "Notepad++",
+            LatestVersion = "8.6.9",
+            InstallerUrl = "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.6.9/npp.8.6.9.Installer.x64.msi",
+            InstallerType = "msi",
+            SilentInstallArgs = "/qn /norestart",
+            SecurityBulletinId = "MS26-PHY12",
+            KbArticleId = "5000012"
+        },
+        new MasterCatalogItem
+        {
+            ApplicationName = "Google Chrome",
+            LatestVersion = "127.0.6533.120",
+            InstallerUrl = "https://dl.google.com/tag/s/appguid%3D%7B8A69D345-224D-4724-88A8-F14749E2562D%7D%26iid%3D%7B362804A9-D971-4712-9213-928E46944A95%7D%26lang%3Den%26browser%3D4%26usagestats%3D0%26appname%3DGoogle%2520Chrome%26needsadmin%3Dtrue%26ap%3Dx64-stable-statsdef_1/update2/installers/ChromeStandaloneSetup64.msi",
+            InstallerType = "msi",
+            SilentInstallArgs = "/qn /norestart",
+            SecurityBulletinId = "MS26-PHY13",
+            KbArticleId = "5000013"
+        }
+    };
+
+    [Function("CatalogUpdates")]
+    public async Task<IActionResult> Run(
+        [HttpTrigger(AuthorizationLevel.Function, "post", Route = "catalog/updates")] HttpRequest req)
+    {
+        _logger.LogInformation("Processing dynamic multi-package update evaluation request.");
+
+        // Read and deserialize the payload safely using standard ASP.NET pipeline
+        string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
+        var requestData = JsonSerializer.Deserialize<CatalogUpdateRequest>(requestBody, new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true
+        });
+
+        var availableUpdates = new List<CatalogUpdate>();
+
+        if (requestData?.InstalledApplications == null || requestData.InstalledApplications.Count == 0)
+        {
+            _logger.LogInformation("Inventory collection payload was empty. Returning global supported catalog definitions.");
+            
+            // If an empty footprint is sent, return ALL current secure packages as updates to push to the local WSUS server metadata cache
+            foreach (var masterItem in MasterCatalog)
             {
-                ApplicationName = "7-Zip",
-                CurrentVersion = "22.01",
-                NewVersion = "24.08",
-                InstallerUrl = "https://www.7-zip.org/a/7z2408-x64.msi",
-                InstallerType = "msi",
-                SilentInstallArgs = "/quiet /norestart",
-                Sha256Hash = "", 
-                SecurityBulletinId = "MS26-PHY11",
-                KbArticleId = "5000011"
+                availableUpdates.Add(MapToCatalogUpdate(masterItem, "0.0.0"));
             }
-        };
+        }
+        else
+        {
+            // Evaluate the endpoints submitted footprint incrementally against the master patch index
+            foreach (var masterItem in MasterCatalog)
+            {
+                var matchedClientApp = requestData.InstalledApplications.FirstOrDefault(a => 
+                    a.DisplayName.Contains(masterItem.ApplicationName, StringComparison.OrdinalIgnoreCase));
+
+                if (matchedClientApp != null)
+                {
+                    // Check if client version is behind our latest production baseline
+                    if (_versionService.IsUpdateAvailable(matchedClientApp.DisplayVersion, masterItem.LatestVersion))
+                    {
+                        _logger.LogInformation("Outdated software flagged: {App} (Client: {CVer} -> Latest: {LVer})", 
+                            masterItem.ApplicationName, matchedClientApp.DisplayVersion, masterItem.LatestVersion);
+                        
+                        availableUpdates.Add(MapToCatalogUpdate(masterItem, matchedClientApp.DisplayVersion));
+                    }
+                }
+            }
+        }
 
         return new OkObjectResult(new CatalogUpdateResponse { Updates = availableUpdates });
+    }
+
+    private static CatalogUpdate MapToCatalogUpdate(MasterCatalogItem item, string currentVersion)
+    {
+        return new CatalogUpdate
+        {
+            ApplicationName = item.ApplicationName,
+            CurrentVersion = currentVersion,
+            NewVersion = item.LatestVersion,
+            InstallerUrl = item.InstallerUrl,
+            InstallerType = item.InstallerType,
+            SilentInstallArgs = item.SilentInstallArgs,
+            Sha256Hash = "", // Bypassed for streaming evaluation speed during testing
+            SecurityBulletinId = item.SecurityBulletinId,
+            KbArticleId = item.KbArticleId
+        };
+    }
+
+    private class MasterCatalogItem
+    {
+        public string ApplicationName { get; set; } = string.Empty;
+        public string LatestVersion { get; set; } = string.Empty;
+        public string InstallerUrl { get; set; } = string.Empty;
+        public string InstallerType { get; set; } = "msi";
+        public string SilentInstallArgs { get; set; } = string.Empty;
+        public string SecurityBulletinId { get; set; } = string.Empty;
+        public string KbArticleId { get; set; } = string.Empty;
     }
 }
