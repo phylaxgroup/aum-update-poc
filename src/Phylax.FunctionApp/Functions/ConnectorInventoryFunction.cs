@@ -10,16 +10,13 @@ namespace Phylax.FunctionApp.Functions;
 public class ConnectorInventoryFunction
 {
     private readonly ILogger<ConnectorInventoryFunction> _logger;
-    private readonly InventoryStorageService _storageService;
     private readonly LogAnalyticsIngestionService _ingestionService;
 
     public ConnectorInventoryFunction(
         ILogger<ConnectorInventoryFunction> logger,
-        InventoryStorageService storageService,
         LogAnalyticsIngestionService ingestionService)
     {
         _logger = logger;
-        _storageService = storageService;
         _ingestionService = ingestionService;
     }
 
@@ -35,10 +32,7 @@ public class ConnectorInventoryFunction
             return req.CreateResponse(HttpStatusCode.BadRequest);
         }
 
-        // 1. Persist the inventory list to Azure Table Storage
-        await _storageService.SaveInventoryAsync(requestData.MachineName, requestData.InstalledApplications);
-
-        // 2. Stream to Log Analytics Workspace via the updated ingestion helper
+        // Stream straight to log analytics pass-through pipeline
         await _ingestionService.ProcessIngestionAsync(requestData.MachineName, requestData.InstalledApplications);
 
         var response = req.CreateResponse(HttpStatusCode.OK);
