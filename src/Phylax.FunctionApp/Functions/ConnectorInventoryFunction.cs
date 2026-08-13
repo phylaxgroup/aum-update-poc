@@ -1,5 +1,4 @@
 using System.Net;
-using System.Text.Json;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
@@ -10,74 +9,40 @@ namespace Phylax.FunctionApp.Functions;
 
 public class ConnectorInventoryFunction
 {
-    private readonly ILogger<ConnectorInventoryFunction> _log;
+    private readonly ILogger<ConnectorInventoryFunction> _logger;
+    private readonly InventoryStorageService _storageService;
     private readonly LogAnalyticsIngestionService _ingestionService;
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy        = JsonNamingPolicy.CamelCase,
-        PropertyNameCaseInsensitive = true
-    };
-
     public ConnectorInventoryFunction(
-        ILogger<ConnectorInventoryFunction> log,
+        ILogger<ConnectorInventoryFunction> logger,
+        InventoryStorageService storageService,
         LogAnalyticsIngestionService ingestionService)
     {
-        _log              = log;
+        _logger = logger;
+        _storageService = storageService;
         _ingestionService = ingestionService;
     }
 
     [Function("ConnectorInventory")]
     public async Task<HttpResponseData> Run(
-        [HttpTrigger(AuthorizationLevel.Function, "post",
-            Route = "connector/inventory")] HttpRequestData req,
-        CancellationToken ct)
+        [HttpTrigger(AuthorizationLevel.Function, "post", Route = "connector/inventory")] HttpRequestData req)
     {
-        var tenantId    = req.Headers.GetValues("X-Tenant-Id").FirstOrDefault();
-        var machineName = req.Headers.GetValues("X-Machine-Name").FirstOrDefault();
+        _logger.LogInformation("Receiving machine inventory payload.");
 
-        if (string.IsNullOrWhiteSpace(tenantId))
+        var requestData = await req.ReadFromJsonAsync<CatalogUpdateRequest>();
+        if (requestData is null)
         {
-            var bad = req.CreateResponse(HttpStatusCode.BadRequest);
-            await bad.WriteStringAsync("X-Tenant-Id header is required");
-            return bad;
+            return req.CreateResponse(HttpStatusCode.BadRequest);
         }
 
-        List<AppInventoryItem>? apps;
-        try
-        {
-            var body = await req.ReadAsStringAsync();
-            apps     = JsonSerializer.Deserialize<List<AppInventoryItem>>(
-                body ?? string.Empty, JsonOptions);
-        }
-        catch (Exception ex)
-        {
-            _log.LogWarning(ex, "Failed to parse inventory request");
-            var bad = req.CreateResponse(HttpStatusCode.BadRequest);
-            await bad.WriteStringAsync("Invalid request body");
-            return bad;
-        }
+        // 1. Persist the inventory list to Azure Table Storage
+        await _storageService.SaveInventoryAsync(requestData.MachineName, requestData.InstalledApplications);
 
-        if (apps is null || apps.Count == 0)
-        {
-            var ok = req.CreateResponse(HttpStatusCode.OK);
-            await ok.WriteStringAsync("No apps in payload");
-            return ok;
-        }
-
-        // Stream snapshot directly to Log Analytics
-        await _ingestionService.UploadInventoryAsync(
-            tenantId,
-            machineName ?? "unknown",
-            apps,
-            ct);
-
-        _log.LogInformation(
-            "Ingested {Count} inventory records for tenant {Tenant} machine {Machine} into Log Analytics",
-            apps.Count, tenantId, machineName);
+        // 2. Stream to Log Analytics Workspace via the updated ingestion helper
+        await _ingestionService.ProcessIngestionAsync(requestData.MachineName, requestData.InstalledApplications);
 
         var response = req.CreateResponse(HttpStatusCode.OK);
-        await response.WriteStringAsync($"Ingested {apps.Count} inventory records to workspace");
+        await response.WriteStringAsync("Inventory logged successfully.");
         return response;
     }
 }
