@@ -11,7 +11,7 @@ namespace Phylax.Shared.Catalog
     /// against. They are two different vocabularies for the same software, so this needs its own
     /// mapping table rather than reusing KnownAppCatalog's regexes directly.
     ///
-    /// The values below are placeholders based on Defender's typical naming convention — pull a
+    /// The values below are placeholders based on Defender's typical naming convention - pull a
     /// real sample from your tenant (GET /api/vulnerabilities/machinesVulnerabilities against your
     /// test boxes) and correct these against actual ProductName/VendorName values before trusting
     /// this for auto-remediation. Treat this file as the one you'll iterate on the most.
@@ -36,8 +36,8 @@ namespace Phylax.Shared.Catalog
         {
             foreach (var rule in Rules)
             {
-                if (finding.VendorName.Contains(rule.VendorContains, StringComparison.OrdinalIgnoreCase) &&
-                    finding.ProductName.Contains(rule.ProductContains, StringComparison.OrdinalIgnoreCase))
+                if (finding.VendorName.IndexOf(rule.VendorContains, StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    finding.ProductName.IndexOf(rule.ProductContains, StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     return (rule.WingetId, rule.ApplicationName, rule.InstallerType);
                 }

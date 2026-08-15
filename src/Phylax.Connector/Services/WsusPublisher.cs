@@ -20,7 +20,7 @@ public class WsusPublisher
         Directory.CreateDirectory(_stagingDir);
     }
 
-    public async Task<bool> PublishUpdateAsync(AvailableUpdate update, CancellationToken ct = default)
+    public async Task<bool> PublishUpdateAsync(CatalogUpdate update, CancellationToken ct = default)
     {
         try
         {

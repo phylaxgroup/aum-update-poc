@@ -7,7 +7,7 @@ namespace Phylax.Shared.Catalog
     /// <summary>
     /// Maps standard Windows Registry DisplayNames and Publishers to official WinGet Package IDs.
     ///
-    /// Moved here from Phylax.FunctionApp/Services/KnownAppCatalog.cs — it was declared
+    /// Moved here from Phylax.FunctionApp/Services/KnownAppCatalog.cs - it was declared
     /// `namespace Phylax.Connector.Services` while physically living in the FunctionApp project,
     /// which is why it wasn't wired into anything there. Now both the connector (registry-based
     /// matching) and the remediation function (Defender-based matching, via CatalogMatcher) share
@@ -71,7 +71,7 @@ namespace Phylax.Shared.Catalog
             {
                 if (rule.RequiredPublisher != null &&
                     !string.IsNullOrWhiteSpace(publisher) &&
-                    !publisher.Contains(rule.RequiredPublisher, StringComparison.OrdinalIgnoreCase))
+                    publisher!.IndexOf(rule.RequiredPublisher, StringComparison.OrdinalIgnoreCase) < 0)
                 {
                     continue;
                 }

@@ -8,7 +8,7 @@ using Phylax.Remediation.Services;
 using Phylax.Shared.Delivery;
 
 var builder = FunctionsApplication.CreateBuilder(args);
-builder.ConfigureFunctionsWebApplication();
+
 
 var config = builder.Configuration;
 

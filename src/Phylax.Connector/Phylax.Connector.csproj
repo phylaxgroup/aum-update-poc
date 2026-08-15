@@ -23,5 +23,7 @@
       <Private>False</Private>
     </Reference>
   </ItemGroup>
-
+<ItemGroup>
+    <ProjectReference Include="..\Phylax.Shared\Phylax.Shared.csproj" />
+  </ItemGroup>
 </Project>

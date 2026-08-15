@@ -19,8 +19,8 @@ public class CatalogClient
     };
 
     public CatalogClient(
-        HttpClient http, 
-        ILogger<CatalogClient> log, 
+        HttpClient http,
+        ILogger<CatalogClient> log,
         IOptions<PhylaxConnectorOptions> options)
     {
         _http = http;
@@ -28,24 +28,22 @@ public class CatalogClient
         _options = options.Value;
     }
 
-    public async Task<List<AvailableUpdate>> GetRequiredUpdatesAsync(
-        List<InstalledApp> inventory, 
+    public async Task<List<CatalogUpdate>> GetRequiredUpdatesAsync(
+        List<InstalledApp> inventory,
         CancellationToken ct = default)
     {
         try
         {
+            // Shape MUST match Phylax.FunctionApp.Models.CatalogUpdateRequest exactly.
+            // Previously this sent { TenantId, Timestamp, Apps } while the Function App
+            // deserialized { MachineName, Domain, InstalledApplications } - no property
+            // names lined up, so InstalledApplications was always null server-side and
+            // every request silently fell into the "empty payload" branch.
             var requestPayload = new CatalogUpdateRequest
             {
-                TenantId = _options.TenantId,
-                Timestamp = DateTimeOffset.UtcNow,
-                Apps = inventory.Select(a => new AppInventoryItem
-                {
-                    DisplayName = a.DisplayName ?? "",
-                    DisplayVersion = a.DisplayVersion ?? "",
-                    Publisher = a.Publisher ?? "",
-                    ProductCode = a.ProductCode ?? "",
-                    WingetId = a.WingetId ?? ""
-                }).ToList()
+                MachineName = Environment.MachineName,
+                Domain = Environment.UserDomainName,
+                InstalledApplications = inventory
             };
 
             var requestMessage = new HttpRequestMessage(HttpMethod.Post, "api/catalog/updates");
@@ -54,43 +52,19 @@ public class CatalogClient
             requestMessage.Content = JsonContent.Create(requestPayload);
 
             _log.LogInformation("Sending {Count} inventory items to Phylax Catalog API...", inventory.Count);
-            
+
             var response = await _http.SendAsync(requestMessage, ct);
             response.EnsureSuccessStatusCode();
 
             var result = await response.Content.ReadFromJsonAsync<CatalogUpdateResponse>(JsonOptions, ct);
-            
+
             _log.LogInformation("Catalog API returned {Count} available updates.", result?.Updates.Count ?? 0);
-            return result?.Updates ?? new List<AvailableUpdate>();
+            return result?.Updates ?? new List<CatalogUpdate>();
         }
         catch (Exception ex)
         {
             _log.LogError(ex, "Failed to retrieve catalog updates from Function App.");
-            return new List<AvailableUpdate>();
+            return new List<CatalogUpdate>();
         }
     }
-}
-
-// ============================================================================
-// WIRE SERIALIZATION SUPPORT MODELS
-// ============================================================================
-public class CatalogUpdateRequest
-{
-    public string TenantId { get; set; } = string.Empty;
-    public DateTimeOffset Timestamp { get; set; }
-    public List<AppInventoryItem> Apps { get; set; } = new();
-}
-
-public class AppInventoryItem
-{
-    public string DisplayName { get; set; } = string.Empty;
-    public string DisplayVersion { get; set; } = string.Empty;
-    public string Publisher { get; set; } = string.Empty;
-    public string ProductCode { get; set; } = string.Empty;
-    public string WingetId { get; set; } = string.Empty;
-}
-
-public class CatalogUpdateResponse
-{
-    public List<AvailableUpdate> Updates { get; set; } = new();
 }

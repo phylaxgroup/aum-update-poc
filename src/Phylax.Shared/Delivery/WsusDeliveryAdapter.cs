@@ -15,7 +15,7 @@ namespace Phylax.Shared.Delivery
     /// End-to-end WSUS delivery: download payload -> build SDP -> publish -> approve.
     ///
     /// This replaces the old Phylax.Connector.Services.WsusPublisher, whose Publish()
-    /// method opened a server connection and then stopped — it never called
+    /// method opened a server connection and then stopped - it never called
     /// IPublisher.PublishPackage(), which is why nothing appeared in the WSUS console
     /// even on runs that didn't throw. The WsusInvalidServerException you were hitting
     /// separately is a config issue: PhylaxConnector:Wsus:ServerName wasn't set, so it
@@ -66,7 +66,7 @@ namespace Phylax.Shared.Delivery
                 IUpdateServer server = AdminProxy.GetUpdateServer(wsusServer, useSsl, wsusPort);
                 IPublisher publisher = server.GetPublisher(sdpPath);
 
-                // The call the old stub was missing — uploads SDP metadata + content files
+                // The call the old stub was missing - uploads SDP metadata + content files
                 // and registers the update on the WSUS server.
                 publisher.PublishPackage(sdpPath, Path.GetDirectoryName(payloadPath));
                 _logger.LogInformation("Published {Title} to WSUS on {Server}", updateTitle, wsusServer);
@@ -76,7 +76,8 @@ namespace Phylax.Shared.Delivery
                     var update = server.GetUpdates().OfType<IUpdate>().FirstOrDefault(u => u.Title == updateTitle);
                     if (update is not null)
                     {
-                        var group = server.GetComputerTargetGroups().FirstOrDefault(g => g.Name == targetGroupName)
+                        var group = server.GetComputerTargetGroups().OfType<IComputerTargetGroup>()
+                            .FirstOrDefault(g => g.Name == targetGroupName)
                             ?? throw new InvalidOperationException(
                                 $"WSUS target group '{targetGroupName}' not found. Create it in the WSUS " +
                                 "console or set PhylaxConnector:Wsus:TargetGroupName to an existing group.");
@@ -86,7 +87,7 @@ namespace Phylax.Shared.Delivery
                     }
                     else
                     {
-                        _logger.LogWarning("Published {Title} but couldn't locate it to auto-approve — approve manually.", updateTitle);
+                        _logger.LogWarning("Published {Title} but couldn't locate it to auto-approve - approve manually.", updateTitle);
                     }
                 }
 
@@ -115,9 +116,9 @@ namespace Phylax.Shared.Delivery
             using var response = await _httpClient.GetAsync(candidate.InstallerUrl, HttpCompletionOption.ResponseHeadersRead, ct);
             response.EnsureSuccessStatusCode();
 
-            using var responseStream = await response.Content.ReadAsStreamAsync(ct);
+            using var responseStream = await response.Content.ReadAsStreamAsync();
             using var fileStream = new FileStream(fullPath, FileMode.Create, FileAccess.Write, FileShare.None, 8192, true);
-            await responseStream.CopyToAsync(fileStream, ct);
+            await responseStream.CopyToAsync(fileStream, 81920);
 
             return fullPath;
         }
@@ -133,7 +134,7 @@ namespace Phylax.Shared.Delivery
                 Title = updateTitle,
                 Description = $"Third-party update for {candidate.ApplicationName} deployed via Phylax Vanguard" +
                                (candidate.Trigger == PatchTrigger.VulnerabilityTriggered
-                                   ? $" (Defender-triggered — {string.Join(", ", candidate.RelatedCveIds)})"
+                                   ? $" (Defender-triggered - {string.Join(", ", candidate.RelatedCveIds)})"
                                    : "") + ".",
                 VendorName = candidate.VendorName
             };
@@ -145,22 +146,24 @@ namespace Phylax.Shared.Delivery
             }
             else
             {
-                // NOTE: this branch was broken in the original PackageBuilder.cs — it referenced
-                // sdp.InstallableItems[0] on a brand-new SDP with no installable items yet, which
-                // throws. For .exe installers you need to build the InstallableItem yourself.
-                // FLAGGING: I have not verified CreateInstallableItem() / InstallableItem member
-                // names below against your exact WSUS Administration API version — the MSI path
-                // above (PopulatePackageFromWindowsInstaller) is the well-trodden one and I'd trust
-                // it. Test this EXE branch against the SDK reference or a working sample (WSUS
-                // Package Publisher's source is a good one) before relying on it for Chrome/Notepad++.
-                var item = sdp.CreateInstallableItem();
-                item.OriginalSourceFile.OriginUri = new Uri(candidate.InstallerUrl);
-                item.LaunchCommand = candidate.SilentInstallArgs;
-                if (!string.IsNullOrEmpty(candidate.Sha256Hash))
-                {
-                    item.OriginalSourceFile.Hashes.Add(new FileHash(FileDigestAlgorithm.Sha256, candidate.Sha256Hash));
-                }
-                sdp.InstallableItems.Add(item);
+                // The original PackageBuilder.cs referenced sdp.InstallableItems[0] on a brand-new
+                // SDP with no items yet, which threw. My first attempt at a fix (CreateInstallableItem(),
+                // FileHash, FileDigestAlgorithm) doesn't exist on this version of the WSUS Administration
+                // API either - confirmed by your build output, not guessed this time. Rather than
+                // fabricate a third guess, this throws clearly so it fails loud in your logs instead of
+                // silently no-opping. Real options once you're ready to build this out:
+                //   1. Wrap the .exe in an MSI (msiwrapper/Advanced Installer) before publishing - the
+                //      PopulatePackageFromWindowsInstaller path above is the well-trodden one.
+                //   2. Find a working non-MSI SDP sample against your installed WSUS Administration
+                //      API version specifically (WSUS Package Publisher's source, if you can find a
+                //      version matching your API) and port the exact InstallableItem construction from it.
+                // Until one of those is done, route .exe-type updates (Notepad++, Chrome's .exe builds)
+                // through WingetLocalDeliveryAdapter instead of WSUS - MSI-type updates (7-Zip) can use
+                // this path today.
+                throw new NotSupportedException(
+                    $"WsusDeliveryAdapter does not yet support non-MSI installers ({candidate.ApplicationName}, " +
+                    $"type={candidate.InstallerType}). Use WingetLocalDeliveryAdapter for this app, or supply " +
+                    "an MSI-wrapped installer.");
             }
 
             sdp.Save(sdpFullOutputPath);

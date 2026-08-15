@@ -1,10 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- net8.0-windows because WsusDeliveryAdapter references the WSUS Administration API,
-         which is Windows-only. If you later want a pure-cross-platform Shared assembly for the
-         Function App side, split WsusDeliveryAdapter out into its own small project instead. -->
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFrameworks>net48;net8.0-windows;net9.0-windows</TargetFrameworks>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -18,11 +15,14 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Same reference pattern as the existing Phylax.Connector.csproj -->
     <Reference Include="Microsoft.UpdateServices.Administration">
       <HintPath>C:\Program Files\Update Services\Api\Microsoft.UpdateServices.Administration.dll</HintPath>
       <Private>False</Private>
     </Reference>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
+    <Compile Remove="Delivery\WingetArcRunCommandAdapter.cs" />
   </ItemGroup>
 
 </Project>

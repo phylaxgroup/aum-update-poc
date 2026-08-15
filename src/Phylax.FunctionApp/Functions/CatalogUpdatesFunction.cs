@@ -27,6 +27,7 @@ public class CatalogUpdatesFunction
         new MasterCatalogItem
         {
             ApplicationName = "7-Zip",
+            WingetId = "7zip.7zip",
             LatestVersion = "24.08",
             InstallerUrl = "https://www.7-zip.org/a/7z2408-x64.msi",
             InstallerType = "msi",
@@ -37,6 +38,7 @@ public class CatalogUpdatesFunction
         new MasterCatalogItem
         {
             ApplicationName = "Notepad++",
+            WingetId = "Notepad++.Notepad++",
             LatestVersion = "8.6.9",
             InstallerUrl = "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.6.9/npp.8.6.9.Installer.x64.exe",
             InstallerType = "exe", // Updated to EXE
@@ -47,12 +49,26 @@ public class CatalogUpdatesFunction
         new MasterCatalogItem
         {
             ApplicationName = "Google Chrome",
+            WingetId = "Google.Chrome",
             LatestVersion = "127.0.6533.120",
             InstallerUrl = "https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi", // Stable Enterprise MSI link
             InstallerType = "msi",
             SilentInstallArgs = "/qn /norestart",
             SecurityBulletinId = "MS26-PHY13",
             KbArticleId = "5000013"
+        },
+        new MasterCatalogItem
+        {
+            // Verified 2026-08-15: 0.84 released 2026-05-22. Versioned URL, so no evergreen
+            // drift risk - when 0.85 ships, both LatestVersion and InstallerUrl need updating.
+            ApplicationName = "PuTTY",
+            WingetId = "PuTTY.PuTTY",
+            LatestVersion = "0.84",
+            InstallerUrl = "https://the.earth.li/~sgtatham/putty/latest/w64/putty-64bit-0.84-installer.msi",
+            InstallerType = "msi",
+            SilentInstallArgs = "/qn /norestart",
+            SecurityBulletinId = "MS26-PHY14",
+            KbArticleId = "5000014"
         }
     };
 
@@ -74,7 +90,7 @@ public class CatalogUpdatesFunction
         if (requestData?.InstalledApplications == null || requestData.InstalledApplications.Count == 0)
         {
             _logger.LogInformation("Inventory collection payload was empty. Returning global supported catalog definitions.");
-            
+
             // If an empty footprint is sent, return ALL current secure packages as updates to push to the local WSUS server metadata cache
             foreach (var masterItem in MasterCatalog)
             {
@@ -83,10 +99,13 @@ public class CatalogUpdatesFunction
         }
         else
         {
+            _logger.LogInformation("Evaluating {Count} submitted applications from {Machine} against master catalog.",
+                requestData.InstalledApplications.Count, requestData.MachineName);
+
             // Evaluate the endpoints submitted footprint incrementally against the master patch index
             foreach (var masterItem in MasterCatalog)
             {
-                var matchedClientApp = requestData.InstalledApplications.FirstOrDefault(a => 
+                var matchedClientApp = requestData.InstalledApplications.FirstOrDefault(a =>
                     a.DisplayName.Contains(masterItem.ApplicationName, StringComparison.OrdinalIgnoreCase));
 
                 if (matchedClientApp != null)
@@ -94,19 +113,30 @@ public class CatalogUpdatesFunction
                     // Check if client version is behind our latest production baseline
                     if (_versionService.IsUpdateAvailable(matchedClientApp.DisplayVersion, masterItem.LatestVersion))
                     {
-                        _logger.LogInformation("Outdated software flagged: {App} (Client: {CVer} -> Latest: {LVer})", 
+                        _logger.LogInformation("Outdated software flagged: {App} (Client: {CVer} -> Latest: {LVer})",
                             masterItem.ApplicationName, matchedClientApp.DisplayVersion, masterItem.LatestVersion);
-                        
-                        availableUpdates.Add(MapToCatalogUpdate(masterItem, matchedClientApp.DisplayVersion));
+
+                        availableUpdates.Add(MapToCatalogUpdate(masterItem, matchedClientApp.DisplayVersion, matchedClientApp.WingetId));
                     }
                 }
+            }
+
+            // Visibility for apps the connector found but this catalog doesn't cover. Without
+            // this, an unsupported app is indistinguishable from an up-to-date one in the logs.
+            var uncoveredCount = requestData.InstalledApplications.Count(clientApp =>
+                !MasterCatalog.Any(m => clientApp.DisplayName.Contains(m.ApplicationName, StringComparison.OrdinalIgnoreCase)));
+
+            if (uncoveredCount > 0)
+            {
+                _logger.LogInformation("{Count} installed applications are not covered by the master catalog (no update evaluation performed for these).",
+                    uncoveredCount);
             }
         }
 
         return new OkObjectResult(new CatalogUpdateResponse { Updates = availableUpdates });
     }
 
-    private static CatalogUpdate MapToCatalogUpdate(MasterCatalogItem item, string currentVersion)
+    private static CatalogUpdate MapToCatalogUpdate(MasterCatalogItem item, string currentVersion, string? clientWingetId = null)
     {
         return new CatalogUpdate
         {
@@ -115,6 +145,9 @@ public class CatalogUpdatesFunction
             NewVersion = item.LatestVersion,
             InstallerUrl = item.InstallerUrl,
             InstallerType = item.InstallerType,
+            // Prefer the WingetId the connector resolved locally (via KnownAppCatalog or the
+            // winget CLI); fall back to the catalog's own value if the client didn't resolve one.
+            WingetId = string.IsNullOrWhiteSpace(clientWingetId) ? item.WingetId : clientWingetId,
             SilentInstallArgs = item.SilentInstallArgs,
             Sha256Hash = "", // Bypassed for streaming evaluation speed during testing
             SecurityBulletinId = item.SecurityBulletinId,
@@ -125,6 +158,7 @@ public class CatalogUpdatesFunction
     private class MasterCatalogItem
     {
         public string ApplicationName { get; set; } = string.Empty;
+        public string WingetId { get; set; } = string.Empty;
         public string LatestVersion { get; set; } = string.Empty;
         public string InstallerUrl { get; set; } = string.Empty;
         public string InstallerType { get; set; } = "msi";

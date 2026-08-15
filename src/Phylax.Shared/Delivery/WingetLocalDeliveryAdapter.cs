@@ -14,11 +14,11 @@ namespace Phylax.Shared.Delivery
     /// path for machines that have the Vanguard agent but aren't WSUS-managed
     /// (or where you'd rather bypass WSUS for speed on a specific app).
     ///
-    /// This is the "tap into the existing vanguard winget install" option from your notes —
+    /// This is the "tap into the existing vanguard winget install" option from your notes -
     /// no separate push mechanism needed since the agent is already local.
     ///
     /// Requires: winget available in PATH for the account running the service (App Installer
-    /// package). If the connector runs as LocalSystem, winget may not be present/callable —
+    /// package). If the connector runs as LocalSystem, winget may not be present/callable -
     /// worth testing on ptg-win25-client specifically since that's what bit you with WSUS.
     /// </summary>
     public class WingetLocalDeliveryAdapter : IPatchDeliveryAdapter
@@ -38,7 +38,7 @@ namespace Phylax.Shared.Delivery
         {
             if (string.IsNullOrWhiteSpace(candidate.WingetId))
             {
-                return DeliveryResult.Fail(Name, $"{candidate.ApplicationName} has no WingetId — cannot resolve via winget.");
+                return DeliveryResult.Fail(Name, $"{candidate.ApplicationName} has no WingetId - cannot resolve via winget.");
             }
 
             var psi = new ProcessStartInfo
@@ -63,10 +63,10 @@ namespace Phylax.Shared.Delivery
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
 
-            await process.WaitForExitAsync(ct);
+            await Task.Run(() => process.WaitForExit(), ct);
 
             // winget exit code 0 = success; -1978335189 (0x8A15002B) = no applicable update
-            // (already current) — treat that as success too, not a failure.
+            // (already current) - treat that as success too, not a failure.
             bool success = process.ExitCode == 0 || process.ExitCode == unchecked((int)0x8A15002B);
 
             _logger.LogInformation("winget exited {Code} for {App}", process.ExitCode, candidate.ApplicationName);

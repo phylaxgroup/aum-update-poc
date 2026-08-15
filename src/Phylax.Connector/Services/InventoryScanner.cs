@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using Microsoft.Win32;
 using Phylax.Connector.Configuration;
 using Phylax.Connector.Models;
+using Phylax.Shared.Catalog;
 
 namespace Phylax.Connector.Services;
 
@@ -18,14 +19,14 @@ public class InventoryScanner
     private readonly ILogger<InventoryScanner> _log;
     private readonly PhylaxConnectorOptions _options;
 
-    // Registry paths to check — 64-bit and 32-bit uninstall hives
+    // Registry paths to check - 64-bit and 32-bit uninstall hives
     private static readonly string[] UninstallPaths =
     [
         @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
         @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
     ];
 
-    // Publishers to exclude — OS components, Microsoft runtimes, drivers
+    // Publishers to exclude - OS components, Microsoft runtimes, drivers
     private static readonly HashSet<string> ExcludedPublishers = new(
         StringComparer.OrdinalIgnoreCase)
     {
@@ -44,7 +45,7 @@ public class InventoryScanner
         "Lenovo"
     };
 
-    // Display name fragments to exclude — system components
+    // Display name fragments to exclude - system components
     private static readonly string[] ExcludedNameFragments =
     [
         "Microsoft Visual C++",
@@ -57,7 +58,7 @@ public class InventoryScanner
         "Security Update for",
         "Hotfix for",
         "Service Pack",
-        "KB", 
+        "KB",
         "Driver",
         "Redistributable",
         "Runtime",
@@ -93,7 +94,7 @@ public class InventoryScanner
             .ToList();
 
         _log.LogInformation(
-            "Scan complete — {Total} third-party applications detected",
+            "Scan complete - {Total} third-party applications detected",
             result.Count);
 
         foreach (var app in result)
@@ -141,7 +142,7 @@ public class InventoryScanner
                 }
                 catch (Exception ex)
                 {
-                    _log.LogDebug(ex, "Skipping registry subkey {Key} — read error", subKeyName);
+                    _log.LogDebug(ex, "Skipping registry subkey {Key} - read error", subKeyName);
                 }
             }
         }
@@ -197,8 +198,23 @@ public class InventoryScanner
 
     private string? TryResolveWingetId(InstalledApp app)
     {
+        // Fast path: hand-verified mappings, deterministic, no process spawn or network call.
+        var known = KnownAppCatalog.TryResolveWingetId(app.DisplayName, app.Publisher);
+        if (known is not null)
+        {
+            _log.LogDebug("Resolved {App} via KnownAppCatalog -> {WingetId}", app.DisplayName, known);
+            return known;
+        }
+
+        // Fallback: fuzzy CLI search against the live winget source. Slower and probabilistic
+        // (0.7 similarity threshold), but this is what gives default-allow coverage of anything
+        // winget knows about, not just what's hardcoded in KnownAppCatalog.
         var wingetPath = GetWingetPath();
-        if (wingetPath is null) return null;
+        if (wingetPath is null)
+        {
+            _log.LogWarning("winget.exe not found on this machine - cannot resolve {App}", app.DisplayName);
+            return null;
+        }
 
         try
         {
@@ -218,12 +234,27 @@ public class InventoryScanner
             var output = process.StandardOutput.ReadToEnd();
             process.WaitForExit(15000);
 
-            return ParseWingetSearchOutput(output, app.DisplayName);
+            var resolved = ParseWingetSearchOutput(output, app.DisplayName);
+
+            if (resolved is null)
+            {
+                // Nothing resolved via either path - log it so there's a reviewable trail of
+                // apps KnownAppCatalog doesn't cover yet, instead of this app just silently
+                // never showing up as patchable with no trace of why.
+                _log.LogWarning("Could not resolve WingetId for {App} (Publisher: {Publisher}) via KnownAppCatalog or fuzzy search",
+                    app.DisplayName, app.Publisher);
+            }
+            else
+            {
+                _log.LogDebug("Resolved {App} via fuzzy search -> {WingetId}", app.DisplayName, resolved);
+            }
+
+            return resolved;
         }
         catch (Exception ex)
         {
             _log.LogDebug(ex,
-                "Winget resolution failed for {App} — will rely on server-side matching",
+                "Winget resolution failed for {App} - will rely on server-side matching",
                 app.DisplayName);
             return null;
         }

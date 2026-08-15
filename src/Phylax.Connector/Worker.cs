@@ -17,7 +17,7 @@ public class Worker : BackgroundService
         ILogger<Worker> log,
         InventoryScanner scanner,
         CatalogClient catalog,
-        LocalInstallerService installer) 
+        LocalInstallerService installer)
     {
         _log = log;
         _scanner = scanner;
@@ -34,29 +34,29 @@ public class Worker : BackgroundService
             try
             {
                 _log.LogInformation("--- Starting Phylax Update & Scanning Cycle ---");
-                
+
                 // 1. Scan local server ARP table registry baselines
-                List<InstalledApp> inventory = _scanner.ScanLocalMachine();
-                
+                List<InstalledApp> inventory = _scanner.GetInstalledApplications();
+
                 // 2. Diff local inventory against cloud Function App catalog definitions
-                List<AvailableUpdate> availableUpdates = await _catalog.GetRequiredUpdatesAsync(inventory, stoppingToken);
+                List<CatalogUpdate> availableUpdates = await _catalog.GetRequiredUpdatesAsync(inventory, stoppingToken);
 
                 int processedCount = 0;
                 foreach (var update in availableUpdates)
                 {
-                    _log.LogInformation("Processing required update: {App} -> v{Version} (KB: {KB})", 
+                    _log.LogInformation("Processing required update: {App} -> v{Version} (KB: {KB})",
                         update.ApplicationName, update.NewVersion, update.KbArticleId);
 
-                    // 3. Execute local silent installation engine
-                    bool success = await _installer.InstallUpdateAsync(update.ApplicationName, update.NewVersion, stoppingToken);
-                    
+                    // 3. Execute local silent installation engine (winget, by WingetId)
+                    bool success = await _installer.InstallUpdateAsync(update, stoppingToken);
+
                     if (success)
                     {
                         processedCount++;
                     }
                 }
 
-                _log.LogInformation("Cycle complete. Successfully evaluated and patched {Processed}/{Total} applications on local endpoint.", 
+                _log.LogInformation("Cycle complete. Successfully evaluated and patched {Processed}/{Total} applications on local endpoint.",
                     processedCount, availableUpdates.Count);
             }
             catch (Exception ex)
