@@ -1,0 +1,19 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+
+    "Defender:TenantId": "<from register-defender-api-app.ps1 output>",
+    "Defender:ClientId": "<from register-defender-api-app.ps1 output>",
+    "Defender:ClientSecret": "<from register-defender-api-app.ps1 output — move to Key Vault reference before this leaves POC>",
+
+    "PhylaxConnector:Wsus:ServerName": "ptg-win25",
+    "PhylaxConnector:Wsus:Port": "8530",
+    "PhylaxConnector:Wsus:UseSsl": "false",
+    "PhylaxConnector:Wsus:TargetGroupName": "All Computers",
+    "PhylaxConnector:Wsus:AutoApprove": "false",
+    "PhylaxConnector:PayloadStagingPath": "C:\\ProgramData\\Phylax\\Staging",
+    "PhylaxConnector:SdpOutputPath": "C:\\ProgramData\\Phylax\\SDP"
+  }
+}
