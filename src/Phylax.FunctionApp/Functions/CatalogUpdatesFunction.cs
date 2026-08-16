@@ -89,12 +89,19 @@ public class CatalogUpdatesFunction
 
         if (requestData?.InstalledApplications == null || requestData.InstalledApplications.Count == 0)
         {
-            _logger.LogInformation("Inventory collection payload was empty. Returning global supported catalog definitions.");
-
-            // If an empty footprint is sent, return ALL current secure packages as updates to push to the local WSUS server metadata cache
-            foreach (var masterItem in MasterCatalog)
-            {
-                availableUpdates.Add(MapToCatalogUpdate(masterItem, "0.0.0"));
+            // Previously this returned the ENTIRE master catalog with CurrentVersion "0.0.0",
+            // which made sense when the only consumer was WSUS metadata seeding. It is actively
+            // dangerous now that LocalInstallerService acts on the same response: an empty
+            // inventory caused the connector to attempt installing software that was never on
+            // the machine (observed on ptg-win25-client 2026-08-15).
+            //
+            // Vanguard patches what is present. It does not install what isn't.
+            _logger.LogWarning(
+                "Inventory payload from {Machine} was empty or missing - returning no updates. " +
+                "If this machine genuinely has third-party software installed, check the connector's " +
+                "InventoryScanner exclusion filters or that it is running with sufficient registry access.",
+                requestData?.MachineName ?? "(unknown)");
+        }
             }
         }
         else
