@@ -102,8 +102,6 @@ public class CatalogUpdatesFunction
                 "InventoryScanner exclusion filters or that it is running with sufficient registry access.",
                 requestData?.MachineName ?? "(unknown)");
         }
-            }
-        }
         else
         {
             _logger.LogInformation("Evaluating {Count} submitted applications from {Machine} against master catalog.",
