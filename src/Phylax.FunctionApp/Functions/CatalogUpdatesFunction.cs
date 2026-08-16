@@ -41,8 +41,8 @@ public class CatalogUpdatesFunction
             WingetId = "Notepad++.Notepad++",
             LatestVersion = "8.6.9",
             InstallerUrl = "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.6.9/npp.8.6.9.Installer.x64.exe",
-            InstallerType = "exe", // Updated to EXE
-            SilentInstallArgs = "/S", // Standard NSIS silent flag
+            InstallerType = "exe",
+            SilentInstallArgs = "/S",
             SecurityBulletinId = "MS26-PHY12",
             KbArticleId = "5000012"
         },
@@ -51,7 +51,7 @@ public class CatalogUpdatesFunction
             ApplicationName = "Google Chrome",
             WingetId = "Google.Chrome",
             LatestVersion = "127.0.6533.120",
-            InstallerUrl = "https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi", // Stable Enterprise MSI link
+            InstallerUrl = "https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi",
             InstallerType = "msi",
             SilentInstallArgs = "/qn /norestart",
             SecurityBulletinId = "MS26-PHY13",
@@ -78,7 +78,6 @@ public class CatalogUpdatesFunction
     {
         _logger.LogInformation("Processing dynamic multi-package update evaluation request.");
 
-        // Read and deserialize the payload safely using standard ASP.NET pipeline
         string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
         var requestData = JsonSerializer.Deserialize<CatalogUpdateRequest>(requestBody, new JsonSerializerOptions
         {
@@ -107,7 +106,6 @@ public class CatalogUpdatesFunction
             _logger.LogInformation("Evaluating {Count} submitted applications from {Machine} against master catalog.",
                 requestData.InstalledApplications.Count, requestData.MachineName);
 
-            // Evaluate the endpoints submitted footprint incrementally against the master patch index
             foreach (var masterItem in MasterCatalog)
             {
                 var matchedClientApp = requestData.InstalledApplications.FirstOrDefault(a =>
@@ -115,7 +113,6 @@ public class CatalogUpdatesFunction
 
                 if (matchedClientApp != null)
                 {
-                    // Check if client version is behind our latest production baseline
                     if (_versionService.IsUpdateAvailable(matchedClientApp.DisplayVersion, masterItem.LatestVersion))
                     {
                         _logger.LogInformation("Outdated software flagged: {App} (Client: {CVer} -> Latest: {LVer})",
@@ -154,7 +151,7 @@ public class CatalogUpdatesFunction
             // winget CLI); fall back to the catalog's own value if the client didn't resolve one.
             WingetId = string.IsNullOrWhiteSpace(clientWingetId) ? item.WingetId : clientWingetId,
             SilentInstallArgs = item.SilentInstallArgs,
-            Sha256Hash = "", // Bypassed for streaming evaluation speed during testing
+            Sha256Hash = "",
             SecurityBulletinId = item.SecurityBulletinId,
             KbArticleId = item.KbArticleId
         };
