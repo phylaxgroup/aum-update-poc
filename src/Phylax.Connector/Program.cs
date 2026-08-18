@@ -29,11 +29,13 @@ var host = Host.CreateDefaultBuilder(args)
         });
 
         // Register clean engine singletons
-	services.AddSingleton<InventoryScanner>();
-	services.AddSingleton<LocalInstallerService>(); // <-- Updated Type Name
-        // Commented out to prevent the .NET runtime from searching for 
-        // WSUS dependencies on non-WSUS client nodes (Server 2022 / 2025):
-        // services.AddSingleton<WsusPublisher>();
+        services.AddSingleton<InventoryScanner>();
+        services.AddSingleton<LocalInstallerService>();
+
+        // NOTE: WSUS publishing is no longer done in-process. Microsoft.UpdateServices.Administration
+        // is a .NET Framework assembly that cannot be loaded from .NET 8, so it now lives in the
+        // standalone net48 Phylax.WsusPublisher.exe, which this connector invokes as a child process
+        // when DeliveryMode is 'wsus'.
 
         // Main execution background loop
         services.AddHostedService<Worker>();

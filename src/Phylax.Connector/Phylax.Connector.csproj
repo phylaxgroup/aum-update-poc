@@ -8,6 +8,7 @@
     <OutputType>Exe</OutputType>
     <Platforms>AnyCPU</Platforms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <LangVersion>latest</LangVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -18,12 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Reference Include="Microsoft.UpdateServices.Administration">
-      <HintPath>C:\Program Files\Update Services\Api\Microsoft.UpdateServices.Administration.dll</HintPath>
-      <Private>False</Private>
-    </Reference>
-  </ItemGroup>
-<ItemGroup>
     <ProjectReference Include="..\Phylax.Shared\Phylax.Shared.csproj" />
   </ItemGroup>
+
 </Project>
