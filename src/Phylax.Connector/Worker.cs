@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Text;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -47,6 +49,20 @@ public class Worker : BackgroundService
             deliveryMode = "winget";
         }
 
+        // Fail fast rather than discovering the publisher is missing mid-cycle.
+        if (deliveryMode == "wsus")
+        {
+            var probePath = ResolvePublisherPath();
+            if (!File.Exists(probePath))
+            {
+                _log.LogError(
+                    "DeliveryMode is 'wsus' but Phylax.WsusPublisher.exe was not found at '{Path}'. " +
+                    "Set PhylaxConnector:WsusPublisherPath, or deploy the publisher alongside the connector. " +
+                    "Falling back to inventory-only.", probePath);
+                deliveryMode = "inventory-only";
+            }
+        }
+
         _log.LogInformation("Phylax Connector Service started on machine: {Machine} (delivery mode: {Mode})",
             Environment.MachineName, deliveryMode);
 
@@ -76,9 +92,7 @@ public class Worker : BackgroundService
                             update.ApplicationName, update.NewVersion, update.KbArticleId);
 
                         bool success = deliveryMode == "wsus"
-                            ? throw new NotImplementedException(
-                                "WSUS delivery now runs through the standalone Phylax.WsusPublisher.exe - wiring pending. " +
-                                "Test the publisher standalone first.")
+                            ? await PublishToWsusAsync(update, stoppingToken)
                             : await _installer.InstallUpdateAsync(update, stoppingToken);
 
                         if (success)
@@ -90,7 +104,7 @@ public class Worker : BackgroundService
                     if (deliveryMode == "wsus")
                     {
                         _log.LogInformation("Cycle complete. Published {Processed}/{Total} package(s) to WSUS. " +
-                            "Approve them in the WSUS console (or pass --approve) for clients to receive them.",
+                            "Approve them in the WSUS console (or set Wsus:AutoApprove) for clients to receive them.",
                             processedCount, availableUpdates.Count);
                     }
                     else
@@ -115,4 +129,138 @@ public class Worker : BackgroundService
             await Task.Delay(_checkInterval, stoppingToken);
         }
     }
+
+    /// <summary>
+    /// Resolves the path to the standalone net48 publisher. Defaults to sitting alongside
+    /// the connector binary; override with PhylaxConnector:WsusPublisherPath.
+    /// </summary>
+    private string ResolvePublisherPath()
+    {
+        var configured = _config["PhylaxConnector:WsusPublisherPath"];
+        return !string.IsNullOrWhiteSpace(configured)
+            ? configured
+            : Path.Combine(AppContext.BaseDirectory, "Phylax.WsusPublisher.exe");
+    }
+
+    /// <summary>
+    /// Invokes Phylax.WsusPublisher.exe as a child process.
+    ///
+    /// This runs out-of-process (rather than referencing the WSUS API directly) because
+    /// Microsoft.UpdateServices.Administration is a .NET Framework assembly that cannot be
+    /// loaded from .NET 8 - verified 2026-08-16: identical code connects fine on net48 and
+    /// throws FileNotFoundException on net8.0-windows. The publisher is a minimal net48
+    /// binary that exists solely to cross that boundary. Do not "simplify" this back into
+    /// the connector.
+    /// </summary>
+    private async Task<bool> PublishToWsusAsync(CatalogUpdate update, CancellationToken ct)
+    {
+        var publisherPath = ResolvePublisherPath();
+
+        var args = new List<string>
+        {
+            "--app",      Quote(update.ApplicationName),
+            "--version",  Quote(update.NewVersion),
+            "--url",      Quote(update.InstallerUrl),
+            "--type",     Quote(update.InstallerType),
+            "--kb",       Quote(update.KbArticleId),
+            "--bulletin", Quote(update.SecurityBulletinId),
+            "--vendor",   Quote(_config["PhylaxConnector:VendorName"]  ?? "Phylax"),
+            "--product",  Quote(_config["PhylaxConnector:ProductName"] ?? "Phylax Third-Party Updates"),
+            "--staging",  Quote(_config["PhylaxConnector:PayloadStagingPath"] ?? @"C:\ProgramData\Phylax\Staging")
+        };
+
+        if (!string.IsNullOrWhiteSpace(update.SilentInstallArgs))
+        {
+            args.Add("--args"); args.Add(Quote(update.SilentInstallArgs));
+        }
+
+        if (!string.IsNullOrWhiteSpace(update.Sha256Hash))
+        {
+            args.Add("--sha256"); args.Add(Quote(update.Sha256Hash));
+        }
+
+        if (!string.IsNullOrWhiteSpace(update.WingetId))
+        {
+            args.Add("--wingetid"); args.Add(Quote(update.WingetId));
+        }
+
+        var wsusServer = _config["PhylaxConnector:Wsus:ServerName"];
+        if (!string.IsNullOrWhiteSpace(wsusServer))
+        {
+            args.Add("--wsusserver"); args.Add(Quote(wsusServer));
+            args.Add("--wsusport");   args.Add(_config["PhylaxConnector:Wsus:Port"] ?? "8530");
+            args.Add("--wsusssl");    args.Add(_config["PhylaxConnector:Wsus:UseSsl"] ?? "false");
+        }
+
+        if (bool.TryParse(_config["PhylaxConnector:Wsus:AutoApprove"], out var autoApprove) && autoApprove)
+        {
+            args.Add("--approve");
+            args.Add(Quote(_config["PhylaxConnector:Wsus:TargetGroupName"] ?? "All Computers"));
+        }
+
+        var psi = new ProcessStartInfo
+        {
+            FileName               = publisherPath,
+            Arguments              = string.Join(" ", args),
+            RedirectStandardOutput = true,
+            RedirectStandardError  = true,
+            UseShellExecute        = false,
+            CreateNoWindow         = true
+        };
+
+        _log.LogDebug("Invoking publisher: {Exe} {Args}", publisherPath, psi.Arguments);
+
+        using var process = new Process { StartInfo = psi };
+        var stdout = new StringBuilder();
+        var stderr = new StringBuilder();
+        process.OutputDataReceived += (_, e) => { if (e.Data != null) stdout.AppendLine(e.Data); };
+        process.ErrorDataReceived  += (_, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
+
+        process.Start();
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+        await process.WaitForExitAsync(ct);
+
+        // Exit codes are defined in Phylax.WsusPublisher/Program.cs:
+        //   0=ok 1=bad args 2=download failed 3=sdp failed 4=publish failed 5=published-but-not-approved
+        switch (process.ExitCode)
+        {
+            case 0:
+                _log.LogInformation("Published {App} {Version} to WSUS.{Detail}",
+                    update.ApplicationName, update.NewVersion, FormatDetail(stdout));
+                return true;
+
+            case 5:
+                // The package IS in WSUS - only the approval step failed. Count it as a success
+                // so the cycle summary isn't misleading, but surface the warning.
+                _log.LogWarning("Published {App} {Version} but approval failed - approve manually in the WSUS console.{Detail}",
+                    update.ApplicationName, update.NewVersion, FormatDetail(stderr));
+                return true;
+
+            default:
+                _log.LogError("Publisher failed for {App} {Version} (exit {Code}: {Meaning}).{Detail}",
+                    update.ApplicationName, update.NewVersion, process.ExitCode,
+                    DescribeExitCode(process.ExitCode), FormatDetail(stderr, stdout));
+                return false;
+        }
+    }
+
+    private static string DescribeExitCode(int code) => code switch
+    {
+        1 => "bad or missing arguments",
+        2 => "download or hash verification failed",
+        3 => "SDP build failed",
+        4 => "WSUS publish failed",
+        _ => "unknown error"
+    };
+
+    private static string FormatDetail(params StringBuilder[] buffers)
+    {
+        var text = string.Join(Environment.NewLine,
+            buffers.Select(b => b.ToString().Trim()).Where(s => s.Length > 0));
+
+        return string.IsNullOrEmpty(text) ? string.Empty : Environment.NewLine + text;
+    }
+
+    private static string Quote(string value) => "\"" + (value ?? string.Empty).Replace("\"", "") + "\"";
 }
