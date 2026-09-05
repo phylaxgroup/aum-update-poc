@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -92,6 +93,7 @@ namespace Phylax.WsusPublisher
 
             // ---- 3. Publish to WSUS ------------------------------------------------
             IUpdateServer server;
+            HashSet<Guid> preExistingUpdateIds;
             try
             {
                 server = string.IsNullOrWhiteSpace(r.WsusServerName)
@@ -99,6 +101,23 @@ namespace Phylax.WsusPublisher
                     : AdminProxy.GetUpdateServer(r.WsusServerName, r.WsusUseSsl, r.WsusPort);
 
                 Console.WriteLine("Connected to WSUS: " + server.Name);
+
+                // Snapshot every UpdateId that already shares this title *before* publishing, so
+                // the approval step below can identify exactly which update THIS run just created
+                // instead of blindly taking the first title match. WSUS assigns a fresh UpdateId
+                // on every PublishPackage() call - it does not dedupe or version by title - so
+                // re-running against an app whose title didn't change (e.g. re-publishing the same
+                // pinned version) produces a second update with an identical title to the first.
+                // Confirmed live 2026-08-31: with two "7-Zip (24.08)" updates present,
+                // FirstOrDefault(u => u.Title == title) approved the stale duplicate from an
+                // earlier run instead of the update this run had just published - the real new
+                // package sat unapproved with no error surfaced anywhere, since Approve() itself
+                // succeeded (just against the wrong object).
+                preExistingUpdateIds = server.GetUpdates()
+                    .OfType<IUpdate>()
+                    .Where(u => u.Title == title)
+                    .Select(u => u.Id.UpdateId)
+                    .ToHashSet();
 
                 IPublisher publisher = server.GetPublisher(manifestPath);
                 publisher.PublishPackage(appDir, null);
@@ -116,13 +135,17 @@ namespace Phylax.WsusPublisher
             {
                 try
                 {
+                    // Match by "wasn't present before this run's publish" rather than by title
+                    // alone - see the preExistingUpdateIds comment above for why a plain title
+                    // match is unsafe the moment any duplicate-titled update exists on the server.
                     var update = server.GetUpdates()
                         .OfType<IUpdate>()
-                        .FirstOrDefault(u => u.Title == title);
+                        .Where(u => u.Title == title)
+                        .FirstOrDefault(u => !preExistingUpdateIds.Contains(u.Id.UpdateId));
 
                     if (update == null)
                     {
-                        Console.Error.WriteLine("WARNING: published but could not locate '" + title + "' to approve.");
+                        Console.Error.WriteLine("WARNING: published but could not locate the newly-published '" + title + "' update to approve (every title match was already present before this run - investigate manually).");
                         return 5;
                     }
 
@@ -137,7 +160,7 @@ namespace Phylax.WsusPublisher
                     }
 
                     update.Approve(UpdateApprovalAction.Install, group);
-                    Console.WriteLine("APPROVED for group: " + r.ApprovalGroup);
+                    Console.WriteLine("APPROVED for group: " + r.ApprovalGroup + " (UpdateId: " + update.Id.UpdateId + ")");
                 }
                 catch (Exception ex)
                 {
