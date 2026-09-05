@@ -6,11 +6,19 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Phylax.Remediation.Services;
 using Phylax.Shared.Delivery;
+using Phylax.Shared.Inventory;
 
 var builder = FunctionsApplication.CreateBuilder(args);
 
 
 var config = builder.Configuration;
+
+// Same "PhylaxDeviceInventory" table Phylax.FunctionApp writes to on every connector call-in -
+// this is what lets RemediationOrchestrator resolve a real DeliveryTarget instead of guessing.
+builder.Services.AddSingleton(_ => new InventoryStore(
+    Environment.GetEnvironmentVariable("AzureWebJobsStorage")
+        ?? throw new InvalidOperationException(
+            "AzureWebJobsStorage is required to initialize the device inventory store.")));
 
 // Defender for Endpoint app registration credentials — see scripts/register-defender-api-app.ps1.
 // ClientSecretCredential shown for POC speed; swap to a certificate or managed identity

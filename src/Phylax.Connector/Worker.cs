@@ -76,7 +76,7 @@ public class Worker : BackgroundService
                 List<InstalledApp> inventory = _scanner.GetInstalledApplications();
 
                 // 2. Diff local inventory against cloud Function App catalog definitions
-                List<CatalogUpdate> availableUpdates = await _catalog.GetRequiredUpdatesAsync(inventory, stoppingToken);
+                List<CatalogUpdate> availableUpdates = await _catalog.GetRequiredUpdatesAsync(inventory, deliveryMode, stoppingToken);
 
                 if (deliveryMode == "inventory-only")
                 {
@@ -147,10 +147,12 @@ public class Worker : BackgroundService
     ///
     /// This runs out-of-process (rather than referencing the WSUS API directly) because
     /// Microsoft.UpdateServices.Administration is a .NET Framework assembly that cannot be
-    /// loaded from .NET 8 - verified 2026-08-16: identical code connects fine on net48 and
-    /// throws FileNotFoundException on net8.0-windows. The publisher is a minimal net48
-    /// binary that exists solely to cross that boundary. Do not "simplify" this back into
-    /// the connector.
+    /// loaded from modern .NET - verified 2026-08-16: identical code connects fine on net48 and
+    /// throws FileNotFoundException on net8.0-windows. (2026-08-22: connector moved to
+    /// net10.0-windows; this is a .NET Framework-vs-modern-.NET assembly loading issue, not
+    /// specific to net8 - the incompatibility is presumed to still apply on net10.0-windows,
+    /// not independently re-verified there.) The publisher is a minimal net48 binary that
+    /// exists solely to cross that boundary. Do not "simplify" this back into the connector.
     /// </summary>
     private async Task<bool> PublishToWsusAsync(CatalogUpdate update, CancellationToken ct)
     {

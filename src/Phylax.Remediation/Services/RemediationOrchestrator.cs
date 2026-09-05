@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Phylax.Shared.Catalog;
 using Phylax.Shared.Delivery;
+using Phylax.Shared.Inventory;
 using Phylax.Shared.Models;
 
 namespace Phylax.Remediation.Services
@@ -20,6 +21,7 @@ namespace Phylax.Remediation.Services
     {
         private readonly DefenderVulnerabilityService _defender;
         private readonly DeliveryAdapterResolver _resolver;
+        private readonly InventoryStore _inventoryStore;
         private readonly ILogger<RemediationOrchestrator> _logger;
 
         // Only auto-remediate at or above this severity by default; anything below gets logged
@@ -29,10 +31,12 @@ namespace Phylax.Remediation.Services
         public RemediationOrchestrator(
             DefenderVulnerabilityService defender,
             DeliveryAdapterResolver resolver,
+            InventoryStore inventoryStore,
             ILogger<RemediationOrchestrator> logger)
         {
             _defender = defender;
             _resolver = resolver;
+            _inventoryStore = inventoryStore;
             _logger = logger;
         }
 
@@ -73,16 +77,39 @@ namespace Phylax.Remediation.Services
                     MaxCvssSeverity = maxSeverity
                 };
 
-                // TODO: resolve the actual DeliveryTarget (WsusManaged / HasVanguardAgent / Arc info)
-                // for group.Key.MachineId — this needs a lookup against your device inventory
-                // (InventoryStorageService, extended with machine metadata) or Defender's own
-                // /machines/{id} response, which includes AAD device ID you can cross-reference.
-                // Stubbed here so the shape of the orchestrator is clear without guessing your
-                // inventory schema.
+                // Resolve the real DeliveryTarget from the same "PhylaxDeviceInventory" table
+                // Phylax.FunctionApp's CatalogUpdatesFunction writes to on every connector
+                // call-in. ComputerDnsName/MachineId is Defender's vocabulary; InventoryStore
+                // normalizes both sides to a short, uppercased hostname so "ptg-win25" (connector's
+                // Environment.MachineName) and "ptg-win25.contoso.local" (Defender's
+                // ComputerDnsName) resolve to the same row.
+                string machineKey = findingsForGroup.First().ComputerDnsName ?? group.Key.MachineId;
+                var inventoryRecord = await _inventoryStore.TryGetAsync(machineKey, ct);
+
+                if (inventoryRecord is null)
+                {
+                    // No record means this machine has never called the catalog API - we don't
+                    // know if it's WSUS-managed, Arc-enabled, or has the connector at all.
+                    // Matches the "fail loud, don't guess" pattern used elsewhere in this codebase
+                    // (LocalInstallerService, WsusPackagePublisher's EXE branch) rather than
+                    // silently defaulting to an adapter that might be wrong for this box.
+                    _logger.LogWarning(
+                        "No inventory record for {Machine} (app: {App}) — skipping remediation. " +
+                        "This machine has never reported into the catalog API, so its WSUS/agent " +
+                        "status is unknown.",
+                        machineKey, appName);
+                    continue;
+                }
+
+                // IsArcEnabled / IsAzureVm / AzureResourceId are NOT populated from this lookup —
+                // the connector has no way to report that about itself. If WingetArcRunCommandAdapter
+                // needs to be exercised, that still needs a separate Azure Resource Graph / Arc
+                // onboarding query; left as a follow-up rather than guessed here.
                 var target = new DeliveryTarget
                 {
-                    MachineName = findingsForGroup.First().ComputerDnsName ?? group.Key.MachineId
-                    // WsusManaged / HasVanguardAgent / IsArcEnabled / AzureResourceId: fill in from your inventory lookup
+                    MachineName = inventoryRecord.MachineName,
+                    WsusManaged = inventoryRecord.WsusManaged,
+                    HasVanguardAgent = inventoryRecord.HasVanguardAgent
                 };
 
                 var adapter = _resolver.Resolve(target);

@@ -33,9 +33,11 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddSingleton<LocalInstallerService>();
 
         // NOTE: WSUS publishing is no longer done in-process. Microsoft.UpdateServices.Administration
-        // is a .NET Framework assembly that cannot be loaded from .NET 8, so it now lives in the
-        // standalone net48 Phylax.WsusPublisher.exe, which this connector invokes as a child process
-        // when DeliveryMode is 'wsus'.
+        // is a .NET Framework assembly that cannot be loaded from modern .NET (originally hit on
+        // net8.0-windows, presumed to still apply now that this project targets net10.0-windows -
+        // it's a .NET Framework-vs-modern-.NET loading issue, not specific to any one modern TFM),
+        // so it now lives in the standalone net48 Phylax.WsusPublisher.exe, which this connector
+        // invokes as a child process when DeliveryMode is 'wsus'.
 
         // Main execution background loop
         services.AddHostedService<Worker>();

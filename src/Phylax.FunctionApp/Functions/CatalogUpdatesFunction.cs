@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
+using Phylax.FunctionApp.Inventory;
 using Phylax.FunctionApp.Models;
 using Phylax.FunctionApp.Services;
 
@@ -12,13 +13,19 @@ public class CatalogUpdatesFunction
 {
     private readonly ILogger<CatalogUpdatesFunction> _logger;
     private readonly VersionComparisonService _versionService;
+    private readonly WingetManifestService _wingetManifestService;
+    private readonly InventoryStore _inventoryStore;
 
     public CatalogUpdatesFunction(
         ILogger<CatalogUpdatesFunction> logger,
-        VersionComparisonService versionService)
+        VersionComparisonService versionService,
+        WingetManifestService wingetManifestService,
+        InventoryStore inventoryStore)
     {
         _logger = logger;
         _versionService = versionService;
+        _wingetManifestService = wingetManifestService;
+        _inventoryStore = inventoryStore;
     }
 
     // A structured Master Catalog definition representing what Phylax supports
@@ -74,7 +81,8 @@ public class CatalogUpdatesFunction
 
     [Function("CatalogUpdates")]
     public async Task<IActionResult> Run(
-        [HttpTrigger(AuthorizationLevel.Function, "post", Route = "catalog/updates")] HttpRequest req)
+        [HttpTrigger(AuthorizationLevel.Function, "post", Route = "catalog/updates")] HttpRequest req,
+        CancellationToken ct)
     {
         _logger.LogInformation("Processing dynamic multi-package update evaluation request.");
 
@@ -83,6 +91,17 @@ public class CatalogUpdatesFunction
         {
             PropertyNameCaseInsensitive = true
         });
+
+        // Record/refresh this machine's inventory row on every call-in, regardless of whether it
+        // has updates pending - this is what lets RemediationOrchestrator later resolve a real
+        // DeliveryTarget (WsusManaged/HasVanguardAgent) for Defender-triggered remediation instead
+        // of guessing. WsusManaged comes from the connector's own reported DeliveryMode, not
+        // assumed - an empty/unrecognized DeliveryMode is treated as "not WSUS-managed" here.
+        if (!string.IsNullOrWhiteSpace(requestData?.MachineName))
+        {
+            bool wsusManaged = string.Equals(requestData.DeliveryMode, "wsus", StringComparison.OrdinalIgnoreCase);
+            await _inventoryStore.UpsertAsync(requestData.MachineName, requestData.Domain, wsusManaged, ct);
+        }
 
         var availableUpdates = new List<CatalogUpdate>();
 
@@ -119,6 +138,23 @@ public class CatalogUpdatesFunction
                             masterItem.ApplicationName, matchedClientApp.DisplayVersion, masterItem.LatestVersion);
 
                         availableUpdates.Add(MapToCatalogUpdate(masterItem, matchedClientApp.DisplayVersion, matchedClientApp.WingetId));
+                    }
+
+                    // Live catalog-drift check, logging only. MasterCatalog's InstallerUrl is a
+                    // version-baked static URL (e.g. "7z2408-x64.msi" literally encodes 24.08) -
+                    // we deliberately do NOT swap in the live winget version as NewVersion here,
+                    // since that would tell the client "install v25.01" while the InstallerUrl
+                    // still points at v24.08's file. This just tells a human the catalog entry
+                    // needs a manual bump (version + URL together) once winget has moved on.
+                    var liveVersion = await _wingetManifestService.GetLatestVersionAsync(masterItem.WingetId, ct);
+                    if (liveVersion != null &&
+                        _versionService.IsUpdateAvailable(masterItem.LatestVersion, liveVersion))
+                    {
+                        _logger.LogWarning(
+                            "Catalog drift: {App} MasterCatalog is pinned to {Static}, but WinGet's live " +
+                            "manifest shows {Live} as latest. Update MasterCatalog's LatestVersion + " +
+                            "InstallerUrl together before clients start missing this update.",
+                            masterItem.ApplicationName, masterItem.LatestVersion, liveVersion);
                     }
                 }
             }

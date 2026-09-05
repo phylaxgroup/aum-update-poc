@@ -8,9 +8,10 @@
     <AssemblyName>Phylax.WsusPublisher</AssemblyName>
     <!-- Deliberately NO Nullable/ImplicitUsings and no Microsoft.Extensions.* packages.
          Keeping this project's dependency surface minimal is the entire point. It exists
-         only because Microsoft.UpdateServices.Administration cannot be loaded from .NET 8
+         only because Microsoft.UpdateServices.Administration cannot be loaded from modern .NET
          (verified 2026-08-16: identical probe code connects fine on net48, throws
-         FileNotFoundException on net8.0-windows). Everything else stays in the net8 connector. -->
+         FileNotFoundException on net8.0-windows - presumed to still apply on net10.0-windows,
+         not independently re-verified there). Everything else stays in the net10 connector. -->
   </PropertyGroup>
 
   <ItemGroup>

@@ -31,6 +31,7 @@ public class CatalogClient
 
     public async Task<List<CatalogUpdate>> GetRequiredUpdatesAsync(
         List<InstalledApp> inventory,
+        string deliveryMode,
         CancellationToken ct = default)
     {
         try
@@ -44,7 +45,8 @@ public class CatalogClient
             {
                 MachineName = Environment.MachineName,
                 Domain = Environment.UserDomainName,
-                InstalledApplications = inventory
+                InstalledApplications = inventory,
+                DeliveryMode = deliveryMode
             };
 
             var requestMessage = new HttpRequestMessage(HttpMethod.Post, "api/catalog/updates");
