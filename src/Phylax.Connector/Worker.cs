@@ -85,17 +85,24 @@ public class Worker : BackgroundService
                 }
                 else
                 {
-                    int processedCount = 0;
+                    int processedCount   = 0;
+                    int approvedCount    = 0;
+                    int notApprovedCount = 0;
+
                     foreach (var update in availableUpdates)
                     {
                         _log.LogInformation("Processing required update: {App} -> v{Version} (KB: {KB})",
                             update.ApplicationName, update.NewVersion, update.KbArticleId);
 
-                        bool success = deliveryMode == "wsus"
-                            ? await PublishToWsusAsync(update, stoppingToken)
-                            : await _installer.InstallUpdateAsync(update, stoppingToken);
+                        if (deliveryMode == "wsus")
+                        {
+                            var outcome = await PublishToWsusAsync(update, stoppingToken);
 
-                        if (success)
+                            if (outcome != WsusPublishOutcome.Failed) processedCount++;
+                            if (outcome == WsusPublishOutcome.PublishedAndApproved) approvedCount++;
+                            if (outcome == WsusPublishOutcome.PublishedNotApproved) notApprovedCount++;
+                        }
+                        else if (await _installer.InstallUpdateAsync(update, stoppingToken))
                         {
                             processedCount++;
                         }
@@ -103,9 +110,37 @@ public class Worker : BackgroundService
 
                     if (deliveryMode == "wsus")
                     {
-                        _log.LogInformation("Cycle complete. Published {Processed}/{Total} package(s) to WSUS. " +
-                            "Approve them in the WSUS console (or set Wsus:AutoApprove) for clients to receive them.",
-                            processedCount, availableUpdates.Count);
+                        // Report what actually happened rather than unconditionally telling the
+                        // operator to go approve things by hand. The old summary printed
+                        // "Approve them in the WSUS console (or set Wsus:AutoApprove)" even
+                        // immediately after auto-approve had succeeded, which is actively
+                        // misleading in a log that just said APPROVED on the preceding line.
+                        if (notApprovedCount > 0)
+                        {
+                            _log.LogWarning(
+                                "Cycle complete. Published {Processed}/{Total} package(s) to WSUS; {Approved} approved, " +
+                                "{NotApproved} published but NOT approved - approve those manually in the WSUS console.",
+                                processedCount, availableUpdates.Count, approvedCount, notApprovedCount);
+                        }
+                        else if (approvedCount > 0)
+                        {
+                            _log.LogInformation(
+                                "Cycle complete. Published and approved {Approved}/{Total} package(s) to WSUS for group '{Group}'. " +
+                                "Clients will offer them on their next detection cycle.",
+                                approvedCount, availableUpdates.Count, ResolveApprovalGroupName());
+                        }
+                        else if (processedCount > 0)
+                        {
+                            _log.LogInformation(
+                                "Cycle complete. Published {Processed}/{Total} package(s) to WSUS. Auto-approve is off " +
+                                "(PhylaxConnector:Wsus:AutoApprove) - approve them in the WSUS console for clients to receive them.",
+                                processedCount, availableUpdates.Count);
+                        }
+                        else
+                        {
+                            _log.LogInformation("Cycle complete. No packages were published ({Total} attempted).",
+                                availableUpdates.Count);
+                        }
                     }
                     else
                     {
@@ -154,9 +189,10 @@ public class Worker : BackgroundService
     /// not independently re-verified there.) The publisher is a minimal net48 binary that
     /// exists solely to cross that boundary. Do not "simplify" this back into the connector.
     /// </summary>
-    private async Task<bool> PublishToWsusAsync(CatalogUpdate update, CancellationToken ct)
+    private async Task<WsusPublishOutcome> PublishToWsusAsync(CatalogUpdate update, CancellationToken ct)
     {
         var publisherPath = ResolvePublisherPath();
+        bool autoApproveRequested = IsAutoApproveEnabled();
 
         var args = new List<string>
         {
@@ -194,10 +230,10 @@ public class Worker : BackgroundService
             args.Add("--wsusssl");    args.Add(_config["PhylaxConnector:Wsus:UseSsl"] ?? "false");
         }
 
-        if (bool.TryParse(_config["PhylaxConnector:Wsus:AutoApprove"], out var autoApprove) && autoApprove)
+        if (autoApproveRequested)
         {
             args.Add("--approve");
-            args.Add(Quote(_config["PhylaxConnector:Wsus:TargetGroupName"] ?? "All Computers"));
+            args.Add(Quote(ResolveApprovalGroupName()));
         }
 
         var psi = new ProcessStartInfo
@@ -230,21 +266,61 @@ public class Worker : BackgroundService
             case 0:
                 _log.LogInformation("Published {App} {Version} to WSUS.{Detail}",
                     update.ApplicationName, update.NewVersion, FormatDetail(stdout));
-                return true;
+
+                // Exit 0 means the publish succeeded. Whether it was also approved depends on
+                // whether we asked for approval at all - the publisher only runs its approval
+                // step when --approve was passed.
+                return autoApproveRequested
+                    ? WsusPublishOutcome.PublishedAndApproved
+                    : WsusPublishOutcome.Published;
 
             case 5:
-                // The package IS in WSUS - only the approval step failed. Count it as a success
-                // so the cycle summary isn't misleading, but surface the warning.
+                // The package IS in WSUS - only the approval step failed. Still counts toward the
+                // published total, but it must be distinguishable in the cycle summary so the
+                // operator knows something genuinely needs manual attention.
                 _log.LogWarning("Published {App} {Version} but approval failed - approve manually in the WSUS console.{Detail}",
                     update.ApplicationName, update.NewVersion, FormatDetail(stderr));
-                return true;
+                return WsusPublishOutcome.PublishedNotApproved;
 
             default:
                 _log.LogError("Publisher failed for {App} {Version} (exit {Code}: {Meaning}).{Detail}",
                     update.ApplicationName, update.NewVersion, process.ExitCode,
                     DescribeExitCode(process.ExitCode), FormatDetail(stderr, stdout));
-                return false;
+                return WsusPublishOutcome.Failed;
         }
+    }
+
+    /// <summary>Whether PhylaxConnector:Wsus:AutoApprove is set to true.</summary>
+    private bool IsAutoApproveEnabled() =>
+        bool.TryParse(_config["PhylaxConnector:Wsus:AutoApprove"], out var autoApprove) && autoApprove;
+
+    /// <summary>
+    /// The WSUS computer target group approvals are made against. Single source of truth for both
+    /// the --approve argument and the cycle summary, so the log can never name a different group
+    /// than the one actually used.
+    /// </summary>
+    private string ResolveApprovalGroupName() =>
+        _config["PhylaxConnector:Wsus:TargetGroupName"] ?? "All Computers";
+
+    /// <summary>
+    /// Result of one publish attempt, mapped from Phylax.WsusPublisher.exe's exit code. Exists so
+    /// the cycle summary can report what actually happened instead of assuming - publish success
+    /// and approval success are separate outcomes, and conflating them is what produced a summary
+    /// telling operators to approve packages by hand immediately after auto-approve succeeded.
+    /// </summary>
+    private enum WsusPublishOutcome
+    {
+        /// <summary>Publisher returned a failure exit code; nothing is in WSUS.</summary>
+        Failed,
+
+        /// <summary>Published successfully; approval was not requested (AutoApprove off).</summary>
+        Published,
+
+        /// <summary>Published and approved for the configured target group.</summary>
+        PublishedAndApproved,
+
+        /// <summary>Published, but the approval step failed (exit 5) - needs manual approval.</summary>
+        PublishedNotApproved
     }
 
     private static string DescribeExitCode(int code) => code switch
