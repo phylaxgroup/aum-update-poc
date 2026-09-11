@@ -130,14 +130,35 @@ public class InventoryScanner
                     var app = ParseRegistryEntry(subKey);
                     if (app is null) continue;
 
-                    if (accumulator.TryGetValue(app.DisplayName, out var existing))
+                    // Key on normalized product identity rather than the raw DisplayName, so
+                    // multiple ARP entries for the same product collapse to one. See
+                    // BuildProductKey for why this matters.
+                    var productKey = BuildProductKey(app);
+
+                    if (accumulator.TryGetValue(productKey, out var existing))
                     {
-                        if (IsRicherEntry(app, existing))
-                            accumulator[app.DisplayName] = app;
+                        if (SupersedesExisting(app, existing))
+                        {
+                            _log.LogInformation(
+                                "Collapsing duplicate ARP entries for the same product: keeping '{Kept}' {KeptVer}, " +
+                                "discarding '{Dropped}' {DroppedVer} (publisher: {Publisher}).",
+                                app.DisplayName, app.DisplayVersion,
+                                existing.DisplayName, existing.DisplayVersion, app.Publisher);
+
+                            accumulator[productKey] = app;
+                        }
+                        else
+                        {
+                            _log.LogInformation(
+                                "Collapsing duplicate ARP entries for the same product: keeping '{Kept}' {KeptVer}, " +
+                                "discarding '{Dropped}' {DroppedVer} (publisher: {Publisher}).",
+                                existing.DisplayName, existing.DisplayVersion,
+                                app.DisplayName, app.DisplayVersion, existing.Publisher);
+                        }
                     }
                     else
                     {
-                        accumulator[app.DisplayName] = app;
+                        accumulator[productKey] = app;
                     }
                 }
                 catch (Exception ex)
@@ -386,6 +407,92 @@ public class InventoryScanner
         return ExcludedNameFragments.Any(fragment =>
             name.StartsWith(fragment, StringComparison.OrdinalIgnoreCase) ||
             name.Contains(fragment, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Builds a stable per-product key from an ARP entry, so that several Uninstall-key entries
+    /// describing the same installed product collapse to one inventory item.
+    ///
+    /// Why this exists: a product patched across installer technologies leaves BOTH entries in
+    /// ARP. Observed on ptg-client25 2026-09-11 - 7-Zip 23.01 was originally installed from the
+    /// vendor EXE (ARP key "7-Zip", UninstallString "C:\Program Files\7-Zip\Uninstall.exe") and
+    /// was then patched to 24.08 by our WSUS-published MSI (ARP key
+    /// "{23170F69-40C1-2702-2408-000001000000}", DisplayName "7-Zip 24.08 (x64 edition)").
+    /// The MSI installed into the same directory and overwrote the binaries - 7zFM.exe reports
+    /// FileVersion 24.08, so the machine is genuinely patched - but an MSI major upgrade can only
+    /// supersede other MSI products sharing its UpgradeCode, so the EXE install's ARP entry was
+    /// left behind as an orphan.
+    ///
+    /// Keying on raw DisplayName meant "7-Zip 23.01 (x64)" and "7-Zip 24.08 (x64 edition)" never
+    /// collided, so the scanner reported the stale 23.01 entry forever and the connector kept
+    /// requesting an update that had already been applied - permanently disagreeing with WSUS
+    /// about a machine WSUS was right about.
+    ///
+    /// TRADEOFF: products deliberately installed side-by-side under version-suffixed names
+    /// (Python 3.11 / 3.12, multiple JDKs or .NET SDKs) will now collapse to a single entry -
+    /// the highest version. Publisher is included in the key to limit merges to entries that
+    /// plausibly describe one product, and every collapse is logged at Information level so it
+    /// is auditable rather than silent. If side-by-side versioning needs to be preserved for a
+    /// given product, that belongs in an explicit exclusion list here.
+    /// </summary>
+    private static string BuildProductKey(InstalledApp app)
+    {
+        var name = app.DisplayName;
+
+        // Strip a trailing architecture/edition parenthetical: "(x64)", "(x64 edition)", "(64-bit)".
+        name = Regex.Replace(
+            name,
+            @"\s*\(\s*(?:x86|x64|amd64|arm64|32|64)[\s\-]?(?:bit)?(?:\s+edition)?\s*\)\s*$",
+            " ",
+            RegexOptions.IgnoreCase);
+
+        // Strip any other trailing parenthetical ("(User)", "(Machine)", locale tags, ...).
+        name = Regex.Replace(name, @"\s*\([^)]*\)\s*$", " ");
+
+        // Strip a trailing version token: "7-Zip 23.01" -> "7-Zip", "Notepad++ 8.6.9" -> "Notepad++".
+        name = Regex.Replace(name, @"\s+v?\d+(?:\.\d+)*\s*$", " ");
+
+        // Removing a version can leave a dangling separator behind
+        // ("Microsoft .NET Runtime - 10.0.11" -> "Microsoft .NET Runtime -").
+        name = Regex.Replace(name, @"[\s\-–—,:]+$", string.Empty);
+
+        name = name.Trim();
+
+        // Publisher participates in the key so unrelated products that normalize to the same
+        // short name are not merged. An entry with no publisher keeps its own bucket.
+        return $"{name}|{app.Publisher}".ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Decides which of two ARP entries for the same product should represent it. Higher
+    /// DisplayVersion always wins - that is the whole point of collapsing them. Metadata
+    /// richness only breaks ties when the versions are equal or unparseable.
+    /// </summary>
+    private static bool SupersedesExisting(InstalledApp candidate, InstalledApp existing)
+    {
+        int versionComparison = CompareDisplayVersions(candidate.DisplayVersion, existing.DisplayVersion);
+        if (versionComparison != 0) return versionComparison > 0;
+
+        return IsRicherEntry(candidate, existing);
+    }
+
+    /// <summary>
+    /// Compares two ARP DisplayVersion strings. Returns &gt;0 if <paramref name="a"/> is newer.
+    /// Handles the differing field counts ARP produces for the same product across installer
+    /// types (7-Zip: "23.01" from the EXE, "24.08.00.0" from the MSI) - System.Version treats
+    /// unspecified fields as -1, so 24.8.0.0 correctly outranks 23.1. Falls back to an ordinal
+    /// comparison when either side does not parse.
+    /// </summary>
+    private static int CompareDisplayVersions(string a, string b)
+    {
+        bool aParsed = Version.TryParse(a, out var versionA);
+        bool bParsed = Version.TryParse(b, out var versionB);
+
+        if (aParsed && bParsed) return versionA!.CompareTo(versionB);
+        if (aParsed) return 1;   // a parses, b doesn't - prefer the structured one
+        if (bParsed) return -1;
+
+        return string.Compare(a, b, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsRicherEntry(InstalledApp candidate, InstalledApp existing)
