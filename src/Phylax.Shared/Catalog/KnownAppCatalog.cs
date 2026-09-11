@@ -9,9 +9,11 @@ namespace Phylax.Shared.Catalog
     ///
     /// Moved here from Phylax.FunctionApp/Services/KnownAppCatalog.cs - it was declared
     /// `namespace Phylax.Connector.Services` while physically living in the FunctionApp project,
-    /// which is why it wasn't wired into anything there. Now both the connector (registry-based
-    /// matching) and the remediation function (Defender-based matching, via CatalogMatcher) share
-    /// the same rule set instead of drifting into two copies.
+    /// which is why it wasn't wired into anything there.
+    ///
+    /// This is now the only type in Phylax.Shared. It was previously shared with the
+    /// Defender-driven remediation generation (via CatalogMatcher), which was removed
+    /// 2026-09-11; the connector's InventoryScanner is the sole consumer today.
     /// </summary>
     public static class KnownAppCatalog
     {

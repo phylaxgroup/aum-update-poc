@@ -1,84 +1,106 @@
-# Phylax — shared delivery core + Defender remediation sketch
+# Phylax Vanguard — architecture
 
-## Structure
+Third-party application patching for Windows Server estates, delivered through WSUS so that
+updates appear alongside Microsoft patches in Azure Update Manager's assessment and remediation.
+
+## Projects
 
 ```
-Phylax.Shared/              <- new class library, referenced by Connector AND Remediation
-  Models/
-    PatchCandidate.cs        one item to patch, regardless of how it was discovered
-    DeliveryTarget.cs        describes the destination machine
-    DeliveryResult.cs
-    VulnerabilityFinding.cs  one Defender CVE-on-a-machine row
-  Delivery/
-    IPatchDeliveryAdapter.cs
-    WsusDeliveryAdapter.cs        fixes the old WsusPublisher stub — actually calls PublishPackage()
-    WingetLocalDeliveryAdapter.cs runs winget locally, used INSIDE Phylax.Connector
-    WingetArcRunCommandAdapter.cs pushes winget via Azure/Arc Run Command, no agent needed
-    DeliveryAdapterResolver.cs    picks an adapter for a target
-  Catalog/
-    KnownAppCatalog.cs        moved from FunctionApp, namespace fixed (was Phylax.Connector.Services)
-    CatalogMatcher.cs         NEW — maps Defender's product/vendor names to winget IDs
-
-Phylax.Remediation/          <- new, separate Function App (timer-triggered)
+Phylax.Connector/            net10.0-windows — the Vanguard agent
   Services/
-    DefenderVulnerabilityService.cs   pulls findings from Defender for Endpoint API
-    RemediationOrchestrator.cs        trigger -> match -> pick adapter -> deliver
-  Functions/
-    VulnerabilityRemediationTimerFunction.cs   runs every 6h
+    InventoryScanner.cs        HKLM Uninstall-hive scan, noise filtering, WingetId resolution
+    CatalogClient.cs           POSTs inventory to the catalog Function, gets back needed updates
+    LocalInstallerService.cs   winget delivery mode; requires a resolved WingetId
+  Worker.cs                    BackgroundService; 6h cycle; dispatches on DeliveryMode
 
-Phylax.Connector.Additions/  <- patch notes for your EXISTING connector project
-  Worker.cs.patch-notes.md   exact diffs to adopt Phylax.Shared instead of local WsusPublisher
+Phylax.WsusPublisher/        net48 — standalone console exe, invoked by the connector
+  WsusPackagePublisher.cs      download+verify -> build SDP -> publish to WSUS -> approve
+  Program.cs                   argument parsing; exit codes are the connector's contract
+
+Phylax.FunctionApp/          net10.0 — the catalog service (Azure Function App)
+  Functions/
+    CatalogUpdatesFunction.cs  matches submitted inventory against MasterCatalog
+    ConnectorStatusFunction.cs
+    ConnectorInventoryFunction.cs
+  Inventory/
+    InventoryStore.cs          Azure Table upsert of a device row per connector call-in
+  Services/
+    WingetManifestService.cs   live winget manifest lookup for catalog drift detection
+    VersionComparisonService.cs
+
+Phylax.Shared/               net48;net10.0-windows — KnownAppCatalog only
+  Catalog/KnownAppCatalog.cs   DisplayName/Publisher -> WinGet package ID mappings
 
 scripts/
-  install-connector-service.ps1     installs connector as a service, sets Wsus:ServerName correctly
-  register-defender-api-app.ps1     Entra app reg + Vulnerability.Read.All consent
+  install-connector-service.ps1   installs the connector as a service; requires -WsusServerName
 ```
 
-## How the three tiers you described map to this
+## Flow
 
-**Vanguard (scheduled)** — unchanged in spirit: `Phylax.Connector` runs on a timer,
-scans, calls the catalog Function, gets back updates. The only structural change is
-that the last mile (WSUS publish, or winget-direct) now goes through
-`IPatchDeliveryAdapter` instead of a hardcoded `WsusPublisher` call, so both this path
-and the vuln-triggered path share the same delivery code and don't drift into two
-implementations of "how do I actually get this update onto a box."
+1. `Worker` wakes (6h interval) and resolves `DeliveryMode` from config: `wsus`, `winget`, or
+   `inventory-only`. In `wsus` mode it fail-fast checks that `Phylax.WsusPublisher.exe` exists at
+   `PhylaxConnector:WsusPublisherPath`, and **silently downgrades to `inventory-only` if not** —
+   check the startup log line for the mode it actually resolved.
+2. `InventoryScanner` enumerates both HKLM `Uninstall` hives, filters OS/driver/runtime noise by
+   publisher and name fragment, collapses duplicate ARP entries for the same product, and resolves
+   a `WingetId` per app via `KnownAppCatalog` first, then a fuzzy `winget search` CLI fallback.
+3. `CatalogClient` POSTs the inventory to `CatalogUpdatesFunction`, which matches each entry
+   against `MasterCatalog` by `DisplayName.Contains(ApplicationName)` and returns those whose
+   installed version trails the pinned `LatestVersion`. It also logs a warning when winget's live
+   manifest is ahead of the pinned entry (catalog drift) without changing what is delivered.
+4. In `wsus` mode the connector shells out to `Phylax.WsusPublisher.exe` per update. That binary
+   downloads and SHA256-verifies the installer, builds an SDP, rewrites
+   `ApplicationSpecificData` into `UpdateSpecificData` so the package classifies as a Security
+   Update rather than an application install, publishes it, and optionally approves it.
+5. WSUS clients detect the update on their next scan; Azure Update Manager surfaces it for
+   assessment and can install it.
 
-**Winget execution layer** — split into two adapters instead of one, because "target
-Arc/IaaS" and "use Vanguard's local winget" are actually different problems:
-- `WingetLocalDeliveryAdapter` — lives inside the connector, for boxes that already
-  have the agent. No push mechanism needed, it's already there.
-- `WingetArcRunCommandAdapter` — lives in the orchestrator/Function side, for boxes
-  that *don't* have the agent (or that Defender flagged before you ever deployed
-  Vanguard there). Talks to Azure Resource Manager's Run Command API, works for
-  both Arc-enabled servers and native Azure IaaS VMs.
+## Why the publisher is a separate net48 process
 
-**Defender-triggered remediation** — genuinely separate Function App
-(`Phylax.Remediation`), because the trigger is different (timer polling Defender's
-API, not the connector's own schedule) and the auth is different (Defender API app
-registration, not your connector API key). It reuses everything else: same
-`PatchCandidate`/`DeliveryTarget` models, same adapters, same `KnownAppCatalog`-style
-matching (via the new `CatalogMatcher`, since Defender's product names aren't registry
-DisplayNames).
+`Microsoft.UpdateServices.Administration` is a .NET Framework assembly and cannot be loaded from
+modern .NET — verified 2026-08-16: identical probe code connects on net48 and throws
+`FileNotFoundException` on net8.0-windows (presumed to still hold on net10.0-windows, not
+independently re-verified). `Phylax.WsusPublisher` exists solely to cross that boundary, which is
+why it has a deliberately minimal dependency surface and communicates via exit codes. Do not
+"simplify" it back into the connector.
 
-## What's real vs. what needs your hands before it runs
+It is also the only project referencing that assembly, so it is the only one requiring WSUS or the
+RSAT WSUS tools on the build machine. Everything else builds anywhere.
 
-| Piece | Status |
-|---|---|
-| `WsusDeliveryAdapter` — MSI path | Real logic (PopulatePackageFromWindowsInstaller + PublishPackage + Approve), matches the standard WSUS Publishers API pattern. Untested against your actual WSUS box. |
-| `WsusDeliveryAdapter` — EXE path | Flagged inline — I'm not fully certain of the exact `InstallableItem` construction API. Verify against WSUS SDK docs or a working sample before trusting it for Notepad++/Chrome. |
-| `WingetLocalDeliveryAdapter` | Straightforward `Process.Start`, should work as-is. Test under whatever account the service runs as — winget's availability to LocalSystem is inconsistent. |
-| `WingetArcRunCommandAdapter` | API shape is right, **api-version constants are placeholders** — confirm current versions before use. |
-| `DefenderVulnerabilityService` | Endpoint/auth pattern is correct (Defender for Endpoint API via `api.security.microsoft.com`, WindowsDefenderATP app permission), but the response DTO field names are best-effort. Pull one real response from your tenant and correct `DefenderVulnerabilityRow`. |
-| `CatalogMatcher` | Placeholder mapping rules — pull real `productName`/`vendor` values from a live Defender query and correct these. This is the file you'll iterate on most. |
-| `RemediationOrchestrator` | The `DeliveryTarget` lookup for a given machine is stubbed — needs to hook into your actual device inventory (extend `InventoryStorageService` or query Defender's `/machines/{id}` for AAD device correlation). |
+## Operational constraints
 
-## Suggested order to actually test this
+**Publish from one machine.** WSUS publishing is a server-wide action. Run the connector in `wsus`
+mode on a single designated host — ideally the WSUS server itself, where the Administration API's
+dependency chain is already correctly GAC-registered.
 
-1. Fix WSUS config + install script first (`install-connector-service.ps1`), confirm
-   `WsusDeliveryAdapter`'s MSI path publishes successfully against ptg-win25 with 7-Zip
-   — that validates the adapter pattern without touching Defender at all.
-2. Wire `WingetLocalDeliveryAdapter` into the connector for one of the 2022/2025 test
-   boxes, confirm winget upgrades work from the service context.
-3. Only then stand up `Phylax.Remediation` — run `register-defender-api-app.ps1`,
-   point `DefenderVulnerabilityService` at your tenant, and see what a real response
-   looks like before trusting `CatalogMatcher`'s guessed field names.
+**`WsusPublisherPath` is machine-specific.** An `appsettings.json` copied between hosts will point
+at a path that exists on only one of them, and the connector will quietly fall back to
+`inventory-only` on the others.
+
+**Applicability is the SDP's, not ours.** `PopulatePackageFromWindowsInstaller` derives detection
+rules from the installer. A machine already carrying the target version is correctly reported as
+not needing the update.
+
+**Cross-provenance patching leaves ARP inconsistent.** An MSI major upgrade only supersedes MSI
+products sharing its UpgradeCode, so patching an EXE-installed app with an MSI leaves the original
+Uninstall entry behind even when the binaries are overwritten in place. `InventoryScanner`
+collapses these; the orphaned entry and its stale uninstaller remain on disk. Do not build
+remove-then-install remediation on top of a captured `UninstallString` without accounting for this.
+
+## Known gaps
+
+- `MasterCatalog` is a hardcoded list matched by display-name substring. The `WingetId` the scanner
+  resolves plays no part in the match decision. This does not scale to an arbitrary customer estate
+  and is the most significant open design question.
+- `InjectSecuritySchemaAndKb` hardcodes `MsrcSeverity="Critical"` for every package.
+- `appsettings.json` carries an API key and tenant ID in source control and is not gitignored.
+- `KnownAppCatalog`'s `^Git(\s+version)?` rule also matches `GitHub Desktop`.
+
+## History
+
+A second generation targeting Defender for Endpoint vulnerability findings — `Phylax.Remediation`,
+the `IPatchDeliveryAdapter` abstraction and its adapters, `CatalogMatcher`, and the
+`PatchCandidate`/`DeliveryTarget` models — was explored and removed on 2026-09-11 as an abandoned
+side track. It never ran against a live tenant. Its WSUS adapter used the in-process assembly load
+pattern that the connector had already abandoned, so it would likely have failed at
+`AdminProxy.GetUpdateServer()` had it been exercised.

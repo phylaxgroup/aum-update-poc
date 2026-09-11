@@ -1,5 +1,18 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!-- Scope note: this project now exists solely to share KnownAppCatalog with the connector.
+       The Defender-driven remediation generation (Phylax.Remediation, the IPatchDeliveryAdapter
+       abstraction, DeliveryTarget/PatchCandidate/VulnerabilityFinding, CatalogMatcher and the
+       duplicated InventoryStore) was removed 2026-09-11 as an abandoned side track.
+
+       That removal deleted the last consumer of Microsoft.UpdateServices.Administration here
+       (WsusDeliveryAdapter). The reference goes with it, which matters practically: it was
+       declared unconditionally across every target framework, so Phylax.Shared - and therefore
+       Phylax.Connector, which references it - could only build on a machine with WSUS or the
+       RSAT WSUS tools installed. Both now build anywhere. Phylax.WsusPublisher (net48) is once
+       again the only project needing that assembly, which is the entire reason it exists as a
+       separate out-of-process binary. -->
+
   <PropertyGroup>
     <TargetFrameworks>net48;net10.0-windows</TargetFrameworks>
     <LangVersion>latest</LangVersion>
@@ -8,22 +21,10 @@
     <RootNamespace>Phylax.Shared</RootNamespace>
   </PropertyGroup>
 
-  <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="8.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
-    <PackageReference Include="Azure.Core" Version="1.44.1" />
-    <PackageReference Include="Azure.Data.Tables" Version="12.9.1" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Reference Include="Microsoft.UpdateServices.Administration">
-      <HintPath>C:\Program Files\Update Services\Api\Microsoft.UpdateServices.Administration.dll</HintPath>
-      <Private>False</Private>
-    </Reference>
-  </ItemGroup>
-
-  <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
-    <Compile Remove="Delivery\WingetArcRunCommandAdapter.cs" />
-  </ItemGroup>
+  <!-- No PackageReferences remain: KnownAppCatalog needs only System,
+       System.Collections.Generic and System.Text.RegularExpressions. The Microsoft.Extensions.*
+       and Azure.* packages were dependencies of the removed Delivery/ and Inventory/ code.
+       net48 is retained so the polyfill keeps 'record' usable there; nothing currently consumes
+       that target, so it can be dropped along with Polyfills/ if it stays unused. -->
 
 </Project>

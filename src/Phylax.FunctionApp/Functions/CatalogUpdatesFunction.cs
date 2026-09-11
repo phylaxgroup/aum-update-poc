@@ -93,10 +93,14 @@ public class CatalogUpdatesFunction
         });
 
         // Record/refresh this machine's inventory row on every call-in, regardless of whether it
-        // has updates pending - this is what lets RemediationOrchestrator later resolve a real
-        // DeliveryTarget (WsusManaged/HasVanguardAgent) for Defender-triggered remediation instead
-        // of guessing. WsusManaged comes from the connector's own reported DeliveryMode, not
-        // assumed - an empty/unrecognized DeliveryMode is treated as "not WSUS-managed" here.
+        // has updates pending, so there is a fleet-wide view of which machines are reporting in
+        // and how they are configured. WsusManaged comes from the connector's own reported
+        // DeliveryMode rather than being assumed - an empty or unrecognized DeliveryMode is
+        // treated as "not WSUS-managed" here.
+        //
+        // Originally added to let the Defender-driven RemediationOrchestrator resolve a real
+        // DeliveryTarget; that generation was removed 2026-09-11. The row is retained because
+        // fleet visibility is useful on its own, but nothing currently reads it back.
         if (!string.IsNullOrWhiteSpace(requestData?.MachineName))
         {
             bool wsusManaged = string.Equals(requestData.DeliveryMode, "wsus", StringComparison.OrdinalIgnoreCase);
